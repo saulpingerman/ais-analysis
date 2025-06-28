@@ -7,8 +7,8 @@ import pathlib, zipfile, re, contextlib
 import pandas as pd
 import pyarrow as pa, pyarrow.parquet as pq
 
-RAW   = pathlib.Path("~/ais_dk/raw").expanduser()
-PQOUT = pathlib.Path("~/ais_dk/parquet").expanduser()
+RAW   = pathlib.Path("/home/ec2-user/data/01_raw/ais_dk/raw").expanduser()
+PQOUT = pathlib.Path("/home/ec2-user/data/02_intermediate/parquet").expanduser()
 
 NEEDED = {
     "timestamp":   re.compile(r"^#?\s*timestamp$", re.I),
