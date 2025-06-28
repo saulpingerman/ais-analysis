@@ -17,20 +17,18 @@ This repository contains a collection of scripts and notebooks designed to fetch
 ais-analysis/
 │
 ├── scripts/
-│   ├── fetch_week.sh           # Fetches raw data archives
-│   ├── csv_to_parquet.py       # Converts CSV to Parquet
-│   ├── ais_partitioning.py     # Partitions data by date
-│   └── ais_data_cleaner.py     # Cleans partitioned data
+│   ├── fetch_week.sh                 # Fetches raw data archives
+│   ├── csv_to_parquet.py             # Converts CSV to Parquet
+│   ├── ais_partitioning.py           # Partitions data by date
+│   ├── ais_data_cleaner.py           # Cleans partitioned data
+│   ├── resample_ais_data_simple.py   # Main script for track resampling
+│   └── plot_comparison.py            # Script to generate comparison plots
 │
 ├── notebooks/
-│   └── basic_viz_check.ipynb   # Notebook for exploratory analysis and visualization
+│   └── basic_viz_check.ipynb         # Notebook for exploratory analysis and visualization
 │
-├── figures/
-│   └── ais_track_comparison.png # Example output plots
-│
-├── resample_ais_data_simple.py # Main script for track resampling
-├── plot_comparison.py        # Script to generate comparison plots
-└── ...                       # Other verification and analysis scripts
+└── figures/
+    └── ais_track_comparison.png      # Example output plots
 ```
 
 ## Workflow / How to Use
@@ -59,12 +57,12 @@ python scripts/ais_data_cleaner.py
 ### 4. Resample Tracks
 Perform the time-based resampling on the cleaned data.
 ```bash
-python resample_ais_data_simple.py
+python scripts/resample_ais_data_simple.py
 ```
 
 ### 5. Analyze and Visualize
 Use the `plot_comparison.py` script or the notebooks in the `/notebooks` directory to inspect the results and generate figures.
 ```bash
-python plot_comparison.py
+python scripts/plot_comparison.py
 ```
 This will produce comparison plots, which can be found in the `/figures` directory. 
