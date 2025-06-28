@@ -45,24 +45,33 @@ def process_file(source_path, dest_dir):
         # Combine all processed ships into one dataframe
         final_df = pd.concat(all_resampled_ships).reset_index()
         
-        # --- Enforce Schema from Original File ---
-        original_schema = pd.read_parquet(source_path).dtypes
-        for col, dtype in original_schema.items():
-            if col in final_df.columns:
-                final_df[col] = final_df[col].astype(dtype)
+        # --- Enforce Schema ---
+        # Drop rows where 'track_id' is NaN, which can happen with interpolation
+        final_df.dropna(subset=['track_id'], inplace=True)
+        
+        # Restore original dtypes for non-interpolated columns
+        original_dtypes = {k: v for k, v in df.dtypes.items() if k != 'timestamp'}
+        for col, dtype in original_dtypes.items():
+            if col not in cols_to_interpolate:
+                # Use astype with handling for potential mixed types after resampling
+                try:
+                    final_df[col] = final_df[col].astype(dtype)
+                except (ValueError, TypeError):
+                    # If direct casting fails, try to apply it element-wise
+                    final_df[col] = final_df[col].apply(lambda x: pd.to_numeric(x, errors='coerce')).astype(dtype)
         # --- End Schema Enforcement ---
 
         # Ensure correct column order and save
         os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, os.path.basename(source_path))
         
-        final_df = final_df.reindex(columns=original_schema.index) # Reorder columns to match original
+        final_df = final_df[df.columns]
         final_df.to_parquet(dest_path)
 
 
 def main():
-    source_base_dir = 'data/cleaned_partitioned_ais'
-    dest_base_dir = 'data/resampled_ais_data'
+    source_base_dir = '/home/ec2-user/data/02_intermediate/cleaned_partitioned_ais'
+    dest_base_dir = '/home/ec2-user/data/03_primary/resampled_ais_data'
 
     # Collect all file paths
     all_files = []
