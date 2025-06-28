@@ -2,6 +2,8 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 import sys
+import argparse
+import logging
 
 def load_mmsi_data(mmsi, data_dir):
     """
@@ -15,7 +17,7 @@ def load_mmsi_data(mmsi, data_dir):
             df = pd.read_parquet(file_path, columns=['mmsi', 'timestamp', 'lat', 'lon'])
             mmsi_df_parts.append(df[df['mmsi'] == mmsi])
         except Exception as e:
-            print(f"Warning: Could not read {file_path}. Error: {e}", file=sys.stderr)
+            logging.warning("Could not read or process %s. Error: %s", file_path, e)
 
     if not mmsi_df_parts:
         return pd.DataFrame()
@@ -43,44 +45,73 @@ def plot_track_comparison(ax, original_df, resampled_df, mmsi):
     # Enforce equal aspect ratio
     ax.set_aspect('equal', adjustable='box')
 
-def main():
+def main(args):
     """
-    Main function to generate and save the comparison plot.
+    Main function to generate and save the comparison plot for a single MMSI.
     """
-    # These are the 4 longest tracks identified by find_long_tracks.py
-    mmsi_list = [265022000, 636018490, 366698000, 354643000]
-    
-    # Setup paths
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..'))
-    original_data_dir = os.path.join(project_root, 'data', '02_intermediate', 'cleaned_partitioned_ais')
-    resampled_data_dir = os.path.join(project_root, 'data', '03_primary', 'resampled_ais_data')
-    output_dir = os.path.join(project_root, 'data', '04_reporting')
+    mmsi = args.mmsi
+    original_data_dir = args.original_path
+    resampled_data_dir = args.resampled_path
+    output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    for mmsi in mmsi_list:
-        print(f"Processing MMSI: {mmsi}")
-        try:
-            # Load the data for the specific MMSI
-            original_df = load_mmsi_data(mmsi, original_data_dir)
-            resampled_df = load_mmsi_data(mmsi, resampled_data_dir)
+    logging.info("Processing MMSI: %d", mmsi)
+    try:
+        # Load the data for the specific MMSI
+        original_df = load_mmsi_data(mmsi, original_data_dir)
+        resampled_df = load_mmsi_data(mmsi, resampled_data_dir)
 
-            if original_df.empty or resampled_df.empty:
-                print(f"No data found for MMSI {mmsi}. Skipping.")
-                continue
+        if original_df.empty:
+            logging.warning("No original data found for MMSI %d. Skipping.", mmsi)
+            return
+        if resampled_df.empty:
+            logging.warning("No resampled data found for MMSI %d. Skipping.", mmsi)
+            return
 
-            # Generate and save the plot
-            fig, ax = plt.subplots(figsize=(14, 10))
-            plot_track_comparison(ax, original_df, resampled_df, mmsi)
-            
-            output_path = os.path.join(output_dir, f'ais_track_before_after_interp_{mmsi}.png')
-            plt.savefig(output_path, bbox_inches='tight')
-            plt.close(fig) # Close the figure to free memory
-            print(f"Saved plot to {output_path}")
+        # Generate and save the plot
+        fig, ax = plt.subplots(figsize=(14, 10))
+        plot_track_comparison(ax, original_df, resampled_df, mmsi)
+        
+        output_path = os.path.join(output_dir, f'ais_track_before_after_interp_{mmsi}.png')
+        plt.savefig(output_path, bbox_inches='tight')
+        plt.close(fig) # Close the figure to free memory
+        logging.info("Saved plot to %s", output_path)
 
-        except Exception as e:
-            print(f"Could not process or plot MMSI {mmsi}. Error: {e}")
+    except Exception as e:
+        logging.error("Could not process or plot MMSI %d. Error: %s", mmsi, e)
 
 
 if __name__ == "__main__":
-    main() 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    parser = argparse.ArgumentParser(
+        description="Generate a plot comparing original and resampled vessel tracks."
+    )
+    parser.add_argument(
+        "--mmsi",
+        type=int,
+        required=True,
+        help="The MMSI of the vessel to plot.",
+    )
+    parser.add_argument(
+        "--original_path",
+        type=str,
+        required=True,
+        help="Path to the root directory of the original (cleaned) partitioned data.",
+    )
+    parser.add_argument(
+        "--resampled_path",
+        type=str,
+        required=True,
+        help="Path to the root directory of the resampled partitioned data.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=True,
+        help="Directory to save the output plot.",
+    )
+    args = parser.parse_args()
+    main(args) 
