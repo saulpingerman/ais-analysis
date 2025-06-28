@@ -1,6 +1,7 @@
 import pandas as pd
 import os
-from tqdm import tqdm
+import argparse
+import logging
 
 def process_file(source_path, dest_dir):
     """
@@ -9,7 +10,7 @@ def process_file(source_path, dest_dir):
     try:
         df = pd.read_parquet(source_path)
     except Exception as e:
-        print(f"Error reading {source_path}: {e}")
+        logging.error("Error reading %s: %s", source_path, e)
         return
 
     # Convert timestamp to datetime objects if it's not already
@@ -67,11 +68,12 @@ def process_file(source_path, dest_dir):
         
         final_df = final_df[df.columns]
         final_df.to_parquet(dest_path)
+        logging.info("Successfully processed and saved %s", dest_path)
 
 
-def main():
-    source_base_dir = '/home/ec2-user/data/02_intermediate/cleaned_partitioned_ais'
-    dest_base_dir = '/home/ec2-user/data/03_primary/resampled_ais_data'
+def main(args):
+    source_base_dir = args.input
+    dest_base_dir = args.output
 
     # Collect all file paths
     all_files = []
@@ -81,11 +83,36 @@ def main():
                 if file.endswith('.parquet'):
                     all_files.append(os.path.join(root, file))
 
-    # Process files with a progress bar
-    for source_path in tqdm(all_files, desc="Processing Partitions"):
+    # Process files
+    logging.info("Found %d parquet files to process.", len(all_files))
+    for source_path in all_files:
         relative_path = os.path.relpath(os.path.dirname(source_path), source_base_dir)
         dest_dir = os.path.join(dest_base_dir, relative_path)
+        logging.info("Processing %s -> %s", source_path, dest_dir)
         process_file(source_path, dest_dir)
+    logging.info("Finished processing all files.")
 
 if __name__ == '__main__':
-    main() 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    parser = argparse.ArgumentParser(
+        description="Resample cleaned AIS data to a fixed 10-minute interval."
+    )
+    parser.add_argument(
+        "--input",
+        "-i",
+        type=str,
+        required=True,
+        help="Root directory for the cleaned, partitioned AIS data.",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=str,
+        required=True,
+        help="Root directory to save the resampled output data.",
+    )
+    args = parser.parse_args()
+    main(args) 
