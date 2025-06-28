@@ -2,16 +2,18 @@ import pandas as pd
 import os
 import sys
 from pathlib import Path
+import argparse
+import logging
 
 def find_long_tracks(data_dir: str, num_tracks: int) -> pd.DataFrame:
     """
     Finds and prints the longest tracks based on geographical span.
     """
-    print(f"Analyzing tracks in {data_dir}...")
+    logging.info("Analyzing tracks in %s...", data_dir)
     all_files = [os.path.join(root, f) for root, _, files in os.walk(data_dir) for f in files if f.endswith('.parquet')]
     
     if not all_files:
-        print("No parquet files found in the directory.")
+        logging.warning("No parquet files found in the directory.")
         return pd.DataFrame()
 
     # The type checker struggles with a list of paths, so we ignore it.
@@ -27,29 +29,47 @@ def find_long_tracks(data_dir: str, num_tracks: int) -> pd.DataFrame:
     
     return span.sort_values(by='total_span', ascending=False).head(num_tracks)
 
-def main():
-    # Go up three levels from the script directory to find the project root
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..'))
-    data_directory = os.path.join(project_root, 'data', '03_primary', 'resampled_ais_data')
+def main(args):
+    data_directory = args.input
+    num_tracks = args.num_tracks
 
     if not os.path.exists(data_directory):
-        print(f"Error: Data directory not found at '{data_directory}'")
-        print("Please ensure the pipeline has been run and the directory structure is correct.")
+        logging.error("Data directory not found at '%s'", data_directory)
         sys.exit(1)
         
-    print(f"Analyzing tracks in {data_directory}...")
-    top_tracks = find_long_tracks(data_directory, 4)
+    top_tracks = find_long_tracks(data_directory, num_tracks)
     
     if top_tracks.empty:
-        print("\nCould not find any tracks to analyze.")
+        logging.info("Could not find any tracks to analyze.")
         return
         
-    print("\n--- Top 4 Longest Tracks by Geographical Span ---")
+    logging.info("--- Top %d Longest Tracks by Geographical Span ---", num_tracks)
     
     # Print the top 4 MMSIs and their track IDs
     for index, row in top_tracks.iterrows():
-        print(f"MMSI: {row['mmsi']}, Track ID: {row['track_id']}")
+        logging.info("MMSI: %s, Track ID: %s", row['mmsi'], row['track_id'])
 
 if __name__ == '__main__':
-    main() 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    parser = argparse.ArgumentParser(
+        description="Find the longest vessel tracks in a dataset based on geographical span."
+    )
+    parser.add_argument(
+        "--input",
+        "-i",
+        type=str,
+        required=True,
+        help="Root directory of the partitioned data to analyze.",
+    )
+    parser.add_argument(
+        "--num_tracks",
+        "-n",
+        type=int,
+        default=4,
+        help="The number of top tracks to find. (Default: 4)",
+    )
+    args = parser.parse_args()
+    main(args) 
