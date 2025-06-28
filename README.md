@@ -17,52 +17,51 @@ This repository contains a collection of scripts and notebooks designed to fetch
 ais-analysis/
 │
 ├── scripts/
-│   ├── fetch_week.sh                 # Fetches raw data archives
-│   ├── csv_to_parquet.py             # Converts CSV to Parquet
-│   ├── ais_partitioning.py           # Partitions data by date
-│   ├── ais_data_cleaner.py           # Cleans partitioned data
+│   ├── ais_data_cleaner.py           # Cleans and splits raw partitioned data
 │   ├── resample_ais_data_simple.py   # Main script for track resampling
-│   └── plot_comparison.py            # Script to generate comparison plots
+│   ├── plot_track_comparison.py      # Script to generate comparison plots
+│   └── test_cleaner_logic.py         # Test suite for the data cleaner
 │
 ├── notebooks/
-│   └── basic_viz_check.ipynb         # Notebook for exploratory analysis and visualization
+│   └── (Exploratory notebooks)
 │
-└── figures/
-    └── ais_track_comparison.png      # Example output plots
+├── figures/
+│   └── (Output plots for verification)
+│
+└── README.md
 ```
 
 ## Workflow / How to Use
 
-The scripts are designed to be run as a pipeline to process AIS data from its raw form to a cleaned, resampled dataset.
+The main workflow consists of two primary steps: cleaning the raw data and then resampling the cleaned tracks to a uniform time interval.
 
-### 1. Fetch Data
-Use the `fetch_week.sh` script to download the raw data archives.
+### 1. Clean Raw Data
+The `ais_data_cleaner.py` script processes a directory of partitioned Parquet files. It filters out bad data points, removes duplicates, and splits long voyages into distinct tracks based on time gaps. It maintains state between runs to ensure track IDs are consistent across multiple days.
+
 ```bash
-./scripts/fetch_week.sh
+python scripts/ais_data_cleaner.py \
+  --input path/to/raw_partitioned_data \
+  --output path/to/cleaned_data \
+  --speed_thresh 80.0 \
+  --gap_hours 6.0
 ```
 
-### 2. Convert and Partition
-Convert the raw CSV files to Parquet and then partition them for efficient access.
+### 2. Resample Tracks
+Once the data is cleaned, the `resample_ais_data_simple.py` script can be used to interpolate the tracks to a uniform 10-minute interval. This is useful for time-series analysis.
+
 ```bash
-python scripts/csv_to_parquet.py
-python scripts/ais_partitioning.py
+python scripts/resample_ais_data_simple.py \
+  --input path/to/cleaned_data \
+  --output path/to/resampled_data
 ```
 
-### 3. Clean Data
-Run the cleaning script on the partitioned data.
-```bash
-python scripts/ais_data_cleaner.py
-```
+### 3. Verify and Analyze
+Use the `plot_track_comparison.py` script to generate figures comparing the original and resampled tracks for a specific vessel. This is essential for visually verifying the quality of the interpolation.
 
-### 4. Resample Tracks
-Perform the time-based resampling on the cleaned data.
 ```bash
-python scripts/resample_ais_data_simple.py
-```
-
-### 5. Analyze and Visualize
-Use the `plot_comparison.py` script or the notebooks in the `/notebooks` directory to inspect the results and generate figures.
-```bash
-python scripts/plot_comparison.py
-```
-This will produce comparison plots, which can be found in the `/figures` directory. 
+python scripts/plot_track_comparison.py \
+  --mmsi 123456789 \
+  --original_path path/to/cleaned_data \
+  --resampled_path path/to/resampled_data \
+  --output_dir figures/
+``` 
