@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from datetime import datetime
 from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
@@ -164,8 +165,12 @@ def clean_partitioned_ais(
                 out_dir = output_root / year_dir.name / month_dir.name / day_dir.name
                 out_dir.mkdir(parents=True, exist_ok=True)
                 result.write_parquet(str(out_dir / "part-0.parquet"))
-                print(
-                    f"Processed {year_dir.name}/{month_dir.name}/{day_dir.name}: {result.height} rows"
+                logging.info(
+                    "Processed %s/%s/%s: %d rows",
+                    year_dir.name,
+                    month_dir.name,
+                    day_dir.name,
+                    result.height,
                 )
 
     state_serializable = {
@@ -176,6 +181,10 @@ def clean_partitioned_ais(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Clean AIS partitioned dataset with speed filtering and track splitting."
     )
@@ -184,28 +193,28 @@ if __name__ == "__main__":
         "-i",
         type=Path,
         required=True,
-        help="Input root directory (year=*/month=*/day=*)",
+        help="Root directory for the input partitioned data (e.g., 'data/01_raw/partitioned_ais').",
     )
     parser.add_argument(
         "--output",
         "-o",
         type=Path,
         required=True,
-        help="Output root directory for cleaned data",
+        help="Root directory to save the cleaned output data (e.g., 'data/02_intermediate/cleaned_ais').",
     )
     parser.add_argument(
         "--speed_thresh",
         "-s",
         type=float,
         default=80.0,
-        help="Max vessel speed (knots)",
+        help="Maximum plausible vessel speed in knots. Points implying a higher speed from the last valid point will be discarded. (Default: 80.0)",
     )
     parser.add_argument(
         "--gap_hours",
         "-g",
         type=float,
         default=6.0,
-        help="Time gap (hours) to split tracks",
+        help="Time gap in hours that defines a new track. If the time between two points for a vessel exceeds this, a new track ID will be assigned. (Default: 6.0)",
     )
     args = parser.parse_args()
     clean_partitioned_ais(
