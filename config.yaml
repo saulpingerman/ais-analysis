@@ -1,0 +1,15 @@
+# Configuration for the AIS Data Analysis Pipeline
+# This file contains key parameters that control the behavior of the processing scripts.
+
+# --- ais_data_cleaner.py ---
+# The maximum plausible speed for a vessel in knots. Any position reports
+# that imply a speed greater than this will be filtered out.
+speed_thresh: 80.0
+
+# The minimum time gap between two position reports to be considered a new,
+# distinct voyage (track_id).
+gap_hours: 6.0
+
+# --- find_long_tracks.py ---
+# The default number of longest tracks to find and display.
+num_tracks: 4 

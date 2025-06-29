@@ -1,4 +1,9 @@
-# Byte-compiled / optimized / DLL files
+# --- Data ---
+# Ignore the data directory completely. Data should not be version controlled.
+/data/
+
+# --- Python ---
+# Byte-compiled / optimized / C extensions
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,8 +25,6 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -47,39 +50,36 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+*.py,cover
 .hypothesis/
 .pytest_cache/
 
-# Translations
-*.mo
-*.pot
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
+# --- Jupyter Notebook ---
 .ipynb_checkpoints
 
-# Tmp files
-*.swp
-*~
-*.tmp
-
-# VS Code
+# --- IDEs / Editors ---
+# VSCode
 .vscode/
+# PyCharm
+.idea/
+
+# --- OS-specific ---
+# macOS
+.DS_Store
+# Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+
+# --- Secrets ---
+*.env
+credentials*

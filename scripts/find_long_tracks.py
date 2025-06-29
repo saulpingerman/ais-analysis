@@ -1,33 +1,46 @@
-import pandas as pd
+import polars as pl
 import os
 import sys
 from pathlib import Path
 import argparse
 import logging
+import yaml
 
-def find_long_tracks(data_dir: str, num_tracks: int) -> pd.DataFrame:
+def load_config(path='config.yaml'):
+    """Loads the YAML configuration file."""
+    with open(path, 'r') as f:
+        return yaml.safe_load(f)
+
+def find_long_tracks(data_dir: str, num_tracks: int) -> pl.DataFrame:
     """
-    Finds and prints the longest tracks based on geographical span.
+    Finds and prints the longest tracks based on geographical span using Polars for memory efficiency.
     """
     logging.info("Analyzing tracks in %s...", data_dir)
-    all_files = [os.path.join(root, f) for root, _, files in os.walk(data_dir) for f in files if f.endswith('.parquet')]
     
-    if not all_files:
+    try:
+        # Lazily scan the dataset to avoid loading all data into memory
+        lazy_df = pl.scan_parquet(os.path.join(data_dir, "**/*.parquet"))
+    except pl.exceptions.NoDataError:
         logging.warning("No parquet files found in the directory.")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
-    # The type checker struggles with a list of paths, so we ignore it.
-    df = pd.read_parquet(all_files) # type: ignore
-
-    # Calculate geographical span for each track
-    span = df.groupby(['mmsi', 'track_id']).agg(
-        lat_span=('lat', lambda x: x.max() - x.min()),
-        lon_span=('lon', lambda x: x.max() - x.min())
-    ).reset_index() # Move mmsi and track_id from index to column
+    # Calculate geographical span for each track using lazy expressions
+    span_df = (
+        lazy_df.group_by('track_id')
+        .agg(
+            pl.first('mmsi').alias('mmsi'),
+            (pl.max('lat') - pl.min('lat')).alias('lat_span'),
+            (pl.max('lon') - pl.min('lon')).alias('lon_span')
+        )
+        .with_columns(
+            (pl.col('lat_span') + pl.col('lon_span')).alias('total_span')
+        )
+        .sort(by='total_span', descending=True)
+        .head(num_tracks)
+    )
     
-    span['total_span'] = span['lat_span'] + span['lon_span']
-    
-    return span.sort_values(by='total_span', ascending=False).head(num_tracks)
+    # Collect the final small result into memory
+    return span_df.collect()
 
 def main(args):
     data_directory = args.input
@@ -39,17 +52,20 @@ def main(args):
         
     top_tracks = find_long_tracks(data_directory, num_tracks)
     
-    if top_tracks.empty:
+    if top_tracks.is_empty():
         logging.info("Could not find any tracks to analyze.")
         return
         
     logging.info("--- Top %d Longest Tracks by Geographical Span ---", num_tracks)
     
-    # Print the top 4 MMSIs and their track IDs
-    for index, row in top_tracks.iterrows():
+    # Print the top tracks
+    for row in top_tracks.iter_rows(named=True):
         logging.info("MMSI: %s, Track ID: %s", row['mmsi'], row['track_id'])
 
 if __name__ == '__main__':
+    # Load configuration from YAML
+    config = load_config()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
@@ -68,8 +84,8 @@ if __name__ == '__main__':
         "--num_tracks",
         "-n",
         type=int,
-        default=4,
-        help="The number of top tracks to find. (Default: 4)",
+        default=config.get('num_tracks', 4),
+        help=f"The number of top tracks to find. (Default: {config.get('num_tracks', 4)})",
     )
     args = parser.parse_args()
     main(args) 

@@ -1,104 +1,72 @@
-import pandas as pd
-import os
+import polars as pl
 import argparse
 import logging
-
-def process_file(source_path, dest_dir):
-    """
-    Processes a single parquet file by iterating through each ship.
-    """
-    try:
-        df = pd.read_parquet(source_path)
-    except Exception as e:
-        logging.error("Error reading %s: %s", source_path, e)
-        return
-
-    # Convert timestamp to datetime objects if it's not already
-    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-
-    all_resampled_ships = []
-    
-    # Iterate over each ship manually
-    for mmsi, ship_df in df.groupby('mmsi'):
-        if ship_df.shape[0] < 2:
-            continue
-
-        ship_df = ship_df.set_index('timestamp').sort_index()
-
-        # Define columns for interpolation vs. forward-filling
-        cols_to_interpolate = ['lat', 'lon', 'sog', 'cog', 'heading']
-        existing_cols_to_interpolate = [col for col in cols_to_interpolate if col in ship_df.columns]
-        
-        # Resample and interpolate the specified columns
-        interpolated_df = ship_df[existing_cols_to_interpolate].resample('10min').mean().interpolate(method='linear')
-        
-        # Resample and forward-fill other columns
-        other_cols_df = ship_df.drop(columns=existing_cols_to_interpolate).resample('10min').ffill()
-
-        # Combine, fill NaNs, and add mmsi back
-        resampled_ship = pd.concat([interpolated_df, other_cols_df], axis=1).ffill().bfill()
-        resampled_ship['mmsi'] = mmsi
-        
-        all_resampled_ships.append(resampled_ship)
-
-    if all_resampled_ships:
-        # Combine all processed ships into one dataframe
-        final_df = pd.concat(all_resampled_ships).reset_index()
-        
-        # --- Enforce Schema ---
-        # Drop rows where 'track_id' is NaN, which can happen with interpolation
-        final_df.dropna(subset=['track_id'], inplace=True)
-        
-        # Restore original dtypes for non-interpolated columns
-        original_dtypes = {k: v for k, v in df.dtypes.items() if k != 'timestamp'}
-        for col, dtype in original_dtypes.items():
-            if col not in cols_to_interpolate:
-                # Use astype with handling for potential mixed types after resampling
-                try:
-                    final_df[col] = final_df[col].astype(dtype)
-                except (ValueError, TypeError):
-                    # If direct casting fails, try to apply it element-wise
-                    final_df[col] = final_df[col].apply(lambda x: pd.to_numeric(x, errors='coerce')).astype(dtype)
-        # --- End Schema Enforcement ---
-
-        # Ensure correct column order and save
-        os.makedirs(dest_dir, exist_ok=True)
-        dest_path = os.path.join(dest_dir, os.path.basename(source_path))
-        
-        final_df = final_df[df.columns]
-        final_df.to_parquet(dest_path)
-        logging.info("Successfully processed and saved %s", dest_path)
-
+from pathlib import Path
+from tqdm import tqdm
+import shutil
 
 def main(args):
-    source_base_dir = args.input
-    dest_base_dir = args.output
+    input_root = Path(args.input)
+    output_root = Path(args.output)
+    
+    if output_root.exists():
+        logging.info(f"Removing existing output directory: {output_root}")
+        shutil.rmtree(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
 
-    # Collect all file paths
-    all_files = []
-    for root, dirs, files in os.walk(source_base_dir):
-        if not any(part.startswith('.') for part in root.split(os.sep)):
-            for file in files:
-                if file.endswith('.parquet'):
-                    all_files.append(os.path.join(root, file))
+    logging.info("Scanning all input files to find unique track IDs...")
+    
+    # Use Polars to efficiently find all unique track IDs across all files
+    all_files = [f for f in input_root.rglob("*.parquet") if f.is_file()]
+    if not all_files:
+        logging.warning("No parquet files found to process.")
+        return
+        
+    unique_tracks_df = pl.scan_parquet(all_files).select("track_id").unique().collect()
+    track_ids = unique_tracks_df["track_id"].to_list()
+    
+    logging.info(f"Found {len(track_ids)} unique tracks to process.")
 
-    # Process files
-    logging.info("Found %d parquet files to process.", len(all_files))
-    for source_path in all_files:
-        relative_path = os.path.relpath(os.path.dirname(source_path), source_base_dir)
-        dest_dir = os.path.join(dest_base_dir, relative_path)
-        logging.info("Processing %s -> %s", source_path, dest_dir)
-        process_file(source_path, dest_dir)
-    logging.info("Finished processing all files.")
+    for track_id in tqdm(track_ids, desc="Resampling tracks"):
+        try:
+            # For each track, scan all files and filter for that track_id
+            track_df = pl.scan_parquet(all_files).filter(pl.col("track_id") == track_id).collect()
+
+            if track_df.height < 2:
+                continue
+
+            # Perform the resampling on the complete track data
+            resampled_track = (
+                track_df.sort("timestamp")
+                .upsample(time_column="timestamp", every="10m")
+                .with_columns(pl.all().forward_fill())
+                .with_columns(pl.col(["lat", "lon", "sog", "cog", "heading"]).interpolate())
+            )
+
+            # Add a date column for partitioning and write to the output
+            if resampled_track.height > 0:
+                final_df = resampled_track.with_columns(
+                    pl.col("timestamp").dt.date().alias("date")
+                )
+                final_df.write_parquet(
+                    output_root,
+                    partition_by="date",
+                    pyarrow_options={"compression": "zstd", "compression_level": 3},
+                )
+        except Exception as e:
+            logging.error(f"Failed to process track {track_id}: {e}")
+
+    logging.info("Finished resampling all tracks.")
+
 
 if __name__ == '__main__':
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+    
     parser = argparse.ArgumentParser(
-        description="Resample cleaned AIS data to a fixed 10-minute interval."
+        description="Resample cleaned AIS data to a fixed 10-minute interval using a track-by-track approach."
     )
     parser.add_argument(
         "--input",

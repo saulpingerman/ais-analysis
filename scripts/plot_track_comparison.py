@@ -4,37 +4,55 @@ import matplotlib.pyplot as plt
 import sys
 import argparse
 import logging
+import polars as pl
 
-def load_mmsi_data(mmsi, data_dir):
+def load_mmsi_data(mmsi: int, data_dir: str) -> pd.DataFrame:
     """
-    Loads all data for a given MMSI from a partitioned parquet directory.
+    Loads all data for a given MMSI from a partitioned parquet directory
+    using Polars for efficient filtering.
     """
-    all_files = [os.path.join(root, f) for root, _, files in os.walk(data_dir) for f in files if f.endswith('.parquet')]
-    
-    mmsi_df_parts = []
-    for file_path in all_files:
-        try:
-            df = pd.read_parquet(file_path, columns=['mmsi', 'timestamp', 'lat', 'lon'])
-            mmsi_df_parts.append(df[df['mmsi'] == mmsi])
-        except Exception as e:
-            logging.warning("Could not read or process %s. Error: %s", file_path, e)
-
-    if not mmsi_df_parts:
+    try:
+        # Lazily scan the dataset and filter for the specific MMSI *before* loading data.
+        # This is massively more efficient than loading all data.
+        lazy_df = pl.scan_parquet(os.path.join(data_dir, "**/*.parquet"))
+        
+        mmsi_df = (
+            lazy_df.filter(pl.col('mmsi') == mmsi)
+            .sort('timestamp')
+            .collect()
+        )
+        
+        if mmsi_df.is_empty():
+            return pd.DataFrame()
+            
+        return mmsi_df.to_pandas()
+        
+    except pl.exceptions.NoDataError:
+        logging.warning("No data files found in %s", data_dir)
         return pd.DataFrame()
-
-    return pd.concat(mmsi_df_parts).sort_values('timestamp').reset_index(drop=True)
+    except Exception as e:
+        logging.error("Failed to load data for MMSI %d from %s. Error: %s", mmsi, data_dir, e)
+        return pd.DataFrame()
 
 def plot_track_comparison(ax, original_df, resampled_df, mmsi):
     """
     Plots the original and resampled tracks on a given matplotlib axis.
     """
-    ax.plot(original_df['lon'], original_df['lat'], 'o-', label='Original', markersize=3, color='blue')
-    ax.plot(resampled_df['lon'], resampled_df['lat'], '.-', label='Resampled (10 min)', markersize=5, color='red', alpha=0.7)
-    
-    # Add start and end points for clarity
-    if not original_df.empty:
-        ax.plot(original_df['lon'].iloc[0], original_df['lat'].iloc[0], 'go', markersize=10, label='Start')
-        ax.plot(original_df['lon'].iloc[-1], original_df['lat'].iloc[-1], 'yo', markersize=10, label='End')
+    # Plot each track_id group separately to avoid connecting disjointed tracks
+    for i, (track_id, group) in enumerate(original_df.groupby('track_id')):
+        # Ensure data is sorted by time before plotting
+        group = group.sort_values('timestamp')
+        label = 'Original' if i == 0 else None # Only add label once
+        ax.plot(group['lon'], group['lat'], 'o-', label=label, markersize=3, color='blue')
+        # Add start and end points for each track
+        ax.plot(group['lon'].iloc[0], group['lat'].iloc[0], 'go', markersize=7, label='Track Start' if i == 0 else None)
+        ax.plot(group['lon'].iloc[-1], group['lat'].iloc[-1], 'yo', markersize=7, label='Track End' if i == 0 else None)
+
+    for i, (track_id, group) in enumerate(resampled_df.groupby('track_id')):
+        # Ensure data is sorted by time before plotting
+        group = group.sort_values('timestamp')
+        label = 'Resampled (10 min)' if i == 0 else None # Only add label once
+        ax.plot(group['lon'], group['lat'], '.-', label=label, markersize=5, color='red', alpha=0.7)
 
     ax.set_title(f'Vessel Track Comparison for MMSI: {mmsi}')
     ax.set_xlabel('Longitude')

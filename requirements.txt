@@ -1,6 +1,16 @@
+# This file specifies the exact versions of the Python packages
+# required to run the scripts in this project.
+#
+# To install these dependencies, run:
+# pip install -r requirements.txt
+
 geopy==2.4.1
-matplotlib==3.10.3
+matplotlib==3.9.4
 pandas==2.3.0
-polars==1.31.0
+polars==1.30.0
 pyarrow==20.0.0
 tqdm==4.67.1
+PyYAML==6.0
+
+# For development and testing
+pytest
