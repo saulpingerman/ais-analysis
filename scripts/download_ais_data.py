@@ -13,7 +13,6 @@ Usage:
 
 import argparse
 import logging
-import re
 import sys
 import tempfile
 from datetime import datetime, timedelta
@@ -102,11 +101,12 @@ class AISDataDownloader:
                 files.append(filename)
                 current_date += timedelta(days=1)
             else:
-                # Monthly files
+                # Monthly files - only add once per month
                 filename = f"aisdk-{year:04d}-{month:02d}.zip"
                 if filename not in files:  # Avoid duplicates when spanning months
                     files.append(filename)
-                # Move to next month
+                
+                # Move to first day of next month to avoid infinite loop
                 if month == 12:
                     current_date = datetime(year + 1, 1, 1)
                 else:
