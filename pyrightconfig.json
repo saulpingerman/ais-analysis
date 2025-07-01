@@ -1,0 +1,12 @@
+{
+    "pythonPath": "/usr/bin/python3",
+    "pythonPlatform": "Linux",
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "pythonPath": "/usr/bin/python3"
+        }
+    ],
+    "venvPath": ".",
+    "reportMissingModuleSource": "warning"
+}
