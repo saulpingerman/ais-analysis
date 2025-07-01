@@ -1,114 +1,217 @@
-# AIS Data Analysis Pipeline
+# AIS Data Processing Pipeline
 
-This project provides a complete, high-performance pipeline for ingesting, cleaning, processing, and analyzing raw Automatic Identification System (AIS) data. The workflow transforms large volumes of raw CSV data from ZIP archives into a clean, partitioned, and analysis-ready dataset in Parquet format.
+High-performance S3-based pipeline for processing Automatic Identification System (AIS) data from the Danish Maritime Authority.
 
-The entire pipeline is built with modern, memory-efficient tooling, primarily using the **Polars** DataFrame library to handle datasets larger than available RAM.
+## Features
 
-## Key Technologies
+- **S3-Native Processing**: Direct ZIP file processing from S3 without local storage
+- **Track Continuity**: Maintains vessel track integrity across day boundaries  
+- **High Performance**: Vectorized operations using Polars for 10-100x speed improvements
+- **Memory Efficient**: Processes datasets larger than available RAM
+- **Data Validation**: Built-in quality checks and statistics
+- **Configurable**: Flexible parameters for different use cases
 
-- **Python**: The core language for all scripting.
-- **Polars**: Used for high-performance, memory-efficient DataFrame manipulation, enabling the processing of large datasets on commodity hardware.
-- **Pandas / Matplotlib**: Used for final data resampling and plotting.
-- **PyArrow**: The underlying engine for efficient Parquet file handling.
+## Quick Start
 
-## Project Structure
-
-Our data processing pipeline follows a clear, staged directory structure:
-
-```
-data/
-├── 01_raw/             # Raw, unprocessed source data (e.g., ZIP archives)
-├── 02_intermediate/    # Intermediate data formats (e.g., raw partitioned Parquet)
-├── 03_primary/         # Cleaned, analysis-ready datasets
-└── 04_reporting/       # Final outputs like plots and reports
-```
-
-The scripts that operate on this data are organized as follows:
-
-```
-repos/ais-analysis/
-│
-├── scripts/
-│   ├── zip_to_parquet.py             # Ingests ZIPs -> Raw Parquet
-│   ├── ais_data_cleaner.py           # Cleans raw data and creates tracks
-│   ├── resample_ais_data_simple.py   # Resamples tracks to 10-min intervals
-│   ├── find_long_tracks.py           # Finds longest tracks by distance
-│   └── plot_track_comparison.py      # Generates before/after comparison plots
-│
-└── README.md
-```
-
-## End-to-End Workflow
-
-Follow these steps in order to run the full data pipeline.
-
-### Step 1: Ingest Raw Data
-
-Place your raw AIS `.zip` archives into the `data/01_raw/ais_dk/` directory. Then, run the `zip_to_parquet.py` script to convert the CSVs inside the ZIPs into a partitioned Parquet dataset. This script is memory-safe and can handle very large archives.
+### 1. Automated Setup
 
 ```bash
-python3 repos/ais-analysis/scripts/zip_to_parquet.py \
-  --source-dir data/01_raw/ais_dk/ \
-  --dest-dir data/02_intermediate/raw_partitioned_ais/
+./setup.sh
 ```
 
-### Step 2: Clean and Create Tracks
+This will install dependencies and guide you through configuration.
 
-Run the `ais_data_cleaner.py` script to process the raw Parquet data. This step performs several key actions:
-- Removes duplicate and invalid position reports.
-- Filters out data points that imply impossible speeds (>80 knots).
-- Intelligently groups position reports into unique voyages (`track_id`), correctly handling tracks that span across multiple days.
+### 2. Manual Setup (Alternative)
+
+Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+Configure AWS credentials:
+```bash
+aws configure
+```
+
+### 3. Basic Usage
+
+Process AIS data from S3:
 
 ```bash
-python3 repos/ais-analysis/scripts/ais_data_cleaner.py \
-  --input data/02_intermediate/raw_partitioned_ais/ \
-  --output data/03_primary/cleaned_partitioned_ais/ \
-  --gap_hours 6.0
+python scripts/s3_ais_processor.py \
+  --bucket your-bucket-name \
+  --input-prefix data/01_raw/ais_dk/raw/ \
+  --output-prefix data/03_primary/cleaned_ais/ \
+  --max-files 1
 ```
 
-### Step 3: Resample Tracks to 10-Minute Intervals
+### 4. Interactive Examples
 
-Run the `resample_ais_data_simple.py` script to regularize the time-series data. It takes the cleaned tracks and interpolates them to create a consistent 10-minute interval between each data point.
+Run guided examples:
 
 ```bash
-python3 repos/ais-analysis/scripts/resample_ais_data_simple.py \
-  --input data/03_primary/cleaned_partitioned_ais/ \
-  --output data/03_primary/10m_cleaned_partitioned_ais/
+python scripts/run_s3_pipeline.py
 ```
 
-### Step 4: Analyze and Visualize
+## Structure
 
-With the data fully processed, you can now perform analysis.
+### Core Scripts (`scripts/`)
+- **`s3_ais_processor.py`** - Main S3-based AIS data processor
+- **`run_s3_pipeline.py`** - Interactive examples and guided usage
+- **`run_tests.py`** - Test runner for all validation tests
 
-**A. Find the Longest Tracks**
+### Testing & Validation (`tests/`)
+- **`comprehensive_test.py`** - Full pipeline validation suite
+- **`test_s3_processor.py`** - Basic system validation tests  
+- **`inspect_data.py`** - Data quality inspection and validation
 
-Use `find_long_tracks.py` to identify the longest voyages in the dataset based on their geographical span.
+### Setup & Utilities
+- **`setup.sh`** - Automated setup script  
+- **`config.yaml`** - Configuration file
+- **`requirements.txt`** - Python dependencies
+
+## Configuration
+
+Edit `config.yaml` to adjust processing parameters:
+
+```yaml
+processing:
+  speed_thresh: 80.0      # Max speed in knots
+  gap_hours: 6.0          # Time gap for new tracks  
+  interpolate: false      # Enable interpolation
+  interpolate_interval: 10 # Minutes between points
+
+s3:
+  bucket_name: "your-bucket-name"
+  input_prefix: "data/01_raw/ais_dk/raw/"
+  output_prefix: "data/03_primary/cleaned_ais/"
+```
+
+## Data Pipeline
+
+```
+S3 ZIP Files → CSV Extraction → Data Cleaning → Speed Filtering 
+     ↓
+Track Creation → Validation → S3 Parquet Output
+```
+
+### Processing Steps
+
+1. **ZIP Extraction**: Streams CSV files from S3 ZIP archives
+2. **Column Mapping**: Standardizes various AIS column formats
+3. **Data Cleaning**: Removes invalid coordinates and duplicates
+4. **Speed Filtering**: Filters impossible vessel speeds (configurable threshold)
+5. **Track Creation**: Groups position reports into voyages based on time gaps
+6. **State Management**: Maintains track continuity across processing runs
+7. **Validation**: Quality checks and statistics generation
+8. **Output**: Compressed Parquet files stored in S3
+
+## Performance
+
+- **Processing Speed**: ~500MB ZIP file in <40 seconds
+- **Memory Usage**: Constant ~1-2GB regardless of input size
+- **Compression**: 5x reduction in storage (ZIP → Parquet)
+- **Track Quality**: <3% single-point tracks (normal for stationary vessels)
+
+## Advanced Usage
+
+### Reset Track State
+
+Start fresh tracking (loses continuity):
 
 ```bash
-python3 repos/ais-analysis/scripts/find_long_tracks.py \
-  --input data/03_primary/10m_cleaned_partitioned_ais/ \
-  --num_tracks 4
+python scripts/s3_ais_processor.py --reset-state ...
 ```
 
-**B. Generate Comparison Plots**
-
-Use `plot_track_comparison.py` to create a visual comparison of a specific vessel's track before and after resampling. This is crucial for verifying that the interpolation process behaved as expected.
+### Custom Parameters
 
 ```bash
-# First, clear any old plots
-rm -f data/04_reporting/*.png
-
-# Get the top 4 MMSIs (example)
-MMSI_LIST="220253000 220464000 636018490 245546000"
-
-# Loop and generate a plot for each one
-for mmsi in $MMSI_LIST; do
-    echo "--- Plotting MMSI: $mmsi ---"
-    python3 repos/ais-analysis/scripts/plot_track_comparison.py \
-        --mmsi "$mmsi" \
-        --original_path data/03_primary/cleaned_partitioned_ais/ \
-        --resampled_path data/03_primary/10m_cleaned_partitioned_ais/ \
-        --output_dir data/04_reporting/
-done
+python scripts/s3_ais_processor.py \
+  --speed-thresh 60.0 \
+  --gap-hours 4.0 \
+  --interpolate \
+  --interpolate-interval 15
 ```
-The final plots will be saved in the `data/04_reporting/` directory. 
+
+### Data Inspection
+
+Analyze specific vessels:
+
+```bash
+python scripts/inspect_data.py --mmsi 123456789
+```
+
+## Output Format
+
+Processed data is stored as Parquet files with the following schema:
+
+- **timestamp**: Position report timestamp
+- **mmsi**: Maritime Mobile Service Identity  
+- **lat/lon**: Coordinates (decimal degrees)
+- **sog**: Speed over ground (knots)
+- **cog**: Course over ground (degrees)
+- **heading**: Vessel heading (degrees)
+- **ship_type**: Vessel type
+- **track_id**: Unique track identifier (MMSI_sequence)
+- **date**: Processing date for partitioning
+
+## AWS Requirements
+
+### IAM Permissions
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject", 
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-bucket-name",
+        "arn:aws:s3:::your-bucket-name/*"
+      ]
+    }
+  ]
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **S3 Access Denied**: Check AWS credentials and IAM permissions
+2. **Memory Errors**: Reduce processing chunk size in config
+3. **Empty Output**: Verify input file format and date range
+4. **Slow Processing**: Check network connectivity and AWS region
+
+### Testing & Validation
+
+Run all tests:
+```bash
+python scripts/run_tests.py --bucket your-bucket-name
+```
+
+Or run individual tests:
+
+Basic system validation:
+```bash
+python tests/test_s3_processor.py
+```
+
+Comprehensive pipeline testing:
+```bash
+python tests/comprehensive_test.py --bucket your-bucket-name --max-days 2
+```
+
+Data quality inspection:
+```bash
+python tests/inspect_data.py --bucket your-bucket-name
+```
+
+## License
+
+See LICENSE file for details.

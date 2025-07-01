@@ -1,16 +1,19 @@
-# This file specifies the exact versions of the Python packages
-# required to run the scripts in this project.
-#
-# To install these dependencies, run:
-# pip install -r requirements.txt
+# S3-Based AIS Data Processing Pipeline Dependencies
+# Install with: pip install -r requirements.txt
 
-geopy==2.4.1
-matplotlib==3.9.4
-pandas==2.3.0
+# Core data processing
 polars==1.30.0
 pyarrow==20.0.0
-tqdm==4.67.1
+pandas==2.3.0
+
+# AWS S3 integration
+boto3
 PyYAML==6.0
 
-# For development and testing
-pytest
+# Utilities
+geopy==2.4.1
+tqdm==4.67.1
+tabulate
+
+# Optional visualization (for data inspection)
+matplotlib==3.9.4
