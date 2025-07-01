@@ -33,9 +33,24 @@ Configure AWS credentials:
 aws configure
 ```
 
-### 3. Basic Usage
+### 3. Download AIS Data
 
-Process AIS data from S3:
+Download data from Danish Maritime Authority:
+
+```bash
+# Download recent data (daily files)
+python scripts/download_ais_data.py --start-date 2024-03-01 --end-date 2024-03-31
+
+# Download historical data (monthly files)  
+python scripts/download_ais_data.py --start-date 2020-01-01 --end-date 2020-12-31
+
+# Or use the shell wrapper
+./scripts/fetch_ais_data.sh 2024-01-01 2024-01-31
+```
+
+### 4. Process AIS Data
+
+Process downloaded data from S3:
 
 ```bash
 python scripts/s3_ais_processor.py \
@@ -45,7 +60,7 @@ python scripts/s3_ais_processor.py \
   --max-files 1
 ```
 
-### 4. Interactive Examples
+### 5. Interactive Examples
 
 Run guided examples:
 
@@ -59,6 +74,8 @@ python scripts/run_s3_pipeline.py
 - **`s3_ais_processor.py`** - Main S3-based AIS data processor
 - **`run_s3_pipeline.py`** - Interactive examples and guided usage
 - **`run_tests.py`** - Test runner for all validation tests
+- **`download_ais_data.py`** - Download AIS data from Danish Maritime Authority
+- **`fetch_ais_data.sh`** - Shell wrapper for easy data downloading
 
 ### Testing & Validation (`tests/`)
 - **`comprehensive_test.py`** - Full pipeline validation suite
@@ -90,21 +107,22 @@ s3:
 ## Data Pipeline
 
 ```
-S3 ZIP Files → CSV Extraction → Data Cleaning → Speed Filtering 
-     ↓
-Track Creation → Validation → S3 Parquet Output
+DMA Download → S3 Storage → CSV Extraction → Data Cleaning → Speed Filtering 
+      ↓              ↓             ↓
+   download_ais_data.py  →  s3_ais_processor.py  →  Track Creation → Validation → S3 Parquet Output
 ```
 
 ### Processing Steps
 
-1. **ZIP Extraction**: Streams CSV files from S3 ZIP archives
-2. **Column Mapping**: Standardizes various AIS column formats
-3. **Data Cleaning**: Removes invalid coordinates and duplicates
-4. **Speed Filtering**: Filters impossible vessel speeds (configurable threshold)
-5. **Track Creation**: Groups position reports into voyages based on time gaps
-6. **State Management**: Maintains track continuity across processing runs
-7. **Validation**: Quality checks and statistics generation
-8. **Output**: Compressed Parquet files stored in S3
+1. **Data Download**: Downloads ZIP files from Danish Maritime Authority to S3
+2. **ZIP Extraction**: Streams CSV files from S3 ZIP archives  
+3. **Column Mapping**: Standardizes various AIS column formats
+4. **Data Cleaning**: Removes invalid coordinates and duplicates
+5. **Speed Filtering**: Filters impossible vessel speeds (configurable threshold)
+6. **Track Creation**: Groups position reports into voyages based on time gaps
+7. **State Management**: Maintains track continuity across processing runs
+8. **Validation**: Quality checks and statistics generation
+9. **Output**: Compressed Parquet files stored in S3
 
 ## Performance
 
