@@ -1,12 +1,13 @@
 {
-    "pythonPath": "/usr/bin/python3",
+    "pythonPath": ".venv/bin/python",
     "pythonPlatform": "Linux",
     "executionEnvironments": [
         {
             "root": ".",
-            "pythonPath": "/usr/bin/python3"
+            "pythonPath": ".venv/bin/python"
         }
     ],
     "venvPath": ".",
+    "venv": ".venv",
     "reportMissingModuleSource": "warning"
 }
