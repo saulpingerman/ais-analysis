@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import warnings
 
+import pandas as pd
+
 import boto3
 import polars as pl
 import pyarrow as pa
@@ -211,56 +213,96 @@ class S3AISProcessor:
         return rename_map
     
     def apply_speed_filter(self, df: pl.DataFrame) -> pl.DataFrame:
-        """Apply speed filter using proper haversine distance calculation."""
+        """Apply speed filter maintaining chain of valid positions using native polars."""
         if df.height < 2:
             return df
         
         try:
-            # Calculate proper haversine distance and speed
-            df_with_calcs = df.with_columns([
-                # Time difference in seconds
-                (pl.col("timestamp") - pl.col("timestamp").shift(1))
-                .dt.total_seconds()
-                .alias("time_diff_s"),
+            # Sort by timestamp to ensure proper order
+            df_sorted = df.sort("timestamp")
+            
+            # Start with empty result and track valid positions
+            valid_indices = [0]  # Always keep first record
+            
+            if df_sorted.height == 1:
+                return df_sorted
+            
+            # Get data as lists for efficient iteration
+            timestamps = df_sorted['timestamp'].to_list()
+            lats = df_sorted['lat'].to_list()
+            lons = df_sorted['lon'].to_list()
+            
+            # Track last valid position
+            last_valid_idx = 0
+            last_valid_lat = lats[0]
+            last_valid_lon = lons[0]
+            last_valid_timestamp = timestamps[0]
+            
+            # Check each subsequent record against last valid position
+            for i in range(1, len(timestamps)):
+                curr_lat = lats[i]
+                curr_lon = lons[i]
+                curr_timestamp = timestamps[i]
                 
-                # Previous coordinates for distance calculation
-                pl.col("lat").shift(1).alias("prev_lat"),
-                pl.col("lon").shift(1).alias("prev_lon")
-            ])
+                # Skip if any coordinate is null
+                if curr_lat is None or curr_lon is None or last_valid_lat is None or last_valid_lon is None:
+                    continue
+                
+                # Calculate time difference in hours
+                time_diff_seconds = (curr_timestamp - last_valid_timestamp).total_seconds()
+                if time_diff_seconds <= 0:
+                    continue
+                
+                time_diff_hours = time_diff_seconds / 3600.0
+                
+                # Calculate haversine distance in kilometers
+                distance_km = self._haversine_distance_fast(last_valid_lat, last_valid_lon, curr_lat, curr_lon)
+                
+                # Calculate speed in knots
+                distance_nm = distance_km / 1.852  # Convert to nautical miles
+                speed_knots = distance_nm / time_diff_hours
+                
+                # Keep record if speed is reasonable
+                if speed_knots <= self.speed_thresh:
+                    valid_indices.append(i)
+                    # Update last valid position
+                    last_valid_lat = curr_lat
+                    last_valid_lon = curr_lon
+                    last_valid_timestamp = curr_timestamp
+                # If speed too high, reject and continue checking against same last valid position
             
-            # Calculate haversine distance in nautical miles
-            df_with_speed = df_with_calcs.with_columns([
-                pl.when(pl.col("time_diff_s") > 0)
-                .then(
-                    # Simplified but more accurate distance calculation in nautical miles
-                    # Using the approximation: 1 degree lat = 60 nm, 1 degree lon = 60 * cos(lat) nm
-                    (
-                        ((pl.col("lat") - pl.col("prev_lat")) * 60.0).pow(2) + 
-                        ((pl.col("lon") - pl.col("prev_lon")) * 60.0 * 
-                         ((pl.col("lat") + pl.col("prev_lat")) / 2.0 * 3.14159 / 180.0).cos()).pow(2)
-                    ).sqrt()
-                )
-                .otherwise(0.0)
-                .alias("distance_nm")
-            ]).with_columns([
-                # Speed in knots (nautical miles per hour)
-                pl.when((pl.col("time_diff_s") > 0) & (pl.col("distance_nm") > 0))
-                .then(pl.col("distance_nm") / (pl.col("time_diff_s") / 3600.0))
-                .otherwise(0.0)
-                .alias("calculated_speed_knots")
-            ])
-            
-            # Filter points with reasonable speeds (strict threshold)
-            filtered_df = df_with_speed.filter(
-                (pl.col("calculated_speed_knots") <= self.speed_thresh) | 
-                (pl.col("time_diff_s").is_null())  # Keep first point
-            ).drop(["time_diff_s", "prev_lat", "prev_lon", "distance_nm", "calculated_speed_knots"])
-            
-            return filtered_df
+            # Return filtered dataframe using valid indices
+            if len(valid_indices) > 0:
+                return df_sorted[valid_indices]
+            else:
+                return df_sorted.head(1)  # Return at least first record
             
         except Exception as e:
-            logger.warning(f"Speed filtering failed, skipping: {e}")
+            logger.warning(f"Speed filtering failed, returning original data: {e}")
             return df
+    
+    def _haversine_distance_fast(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Fast haversine distance calculation in kilometers."""
+        import math
+        
+        # Quick null check
+        if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+            return 0.0
+        
+        # Convert to radians
+        lat1_r = math.radians(lat1)
+        lon1_r = math.radians(lon1)
+        lat2_r = math.radians(lat2)
+        lon2_r = math.radians(lon2)
+        
+        # Haversine formula
+        dlat = lat2_r - lat1_r
+        dlon = lon2_r - lon1_r
+        a = math.sin(dlat/2)**2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        
+        # Earth radius in km
+        return 6371 * c
     
     def interpolate_to_regular_intervals(self, df: pl.DataFrame) -> pl.DataFrame:
         """Interpolate data to regular intervals (e.g., 10 minutes) for each track."""
@@ -331,12 +373,23 @@ class S3AISProcessor:
                             if len(most_common) > 0:
                                 result_pd[col] = most_common.iloc[0]
                     
-                    # Ensure data types are consistent
+                    # Ensure data types are consistent with original DataFrame
                     result_pd['mmsi'] = result_pd['mmsi'].astype('int64')
                     result_pd['track_id'] = result_pd['track_id'].astype('str')
                     
-                    # Convert back to Polars
+                    # Convert back to Polars 
                     result_df = pl.from_pandas(result_pd.reset_index())
+                    
+                    # Cast to match original DataFrame schema exactly to avoid type conflicts
+                    original_schema = track_df.schema
+                    cast_expressions = []
+                    
+                    for col_name, col_type in original_schema.items():
+                        if col_name in result_df.columns:
+                            cast_expressions.append(pl.col(col_name).cast(col_type))
+                    
+                    if cast_expressions:
+                        result_df = result_df.with_columns(cast_expressions)
                     interpolated_tracks.append(result_df)
                 else:
                     interpolated_tracks.append(track_df)

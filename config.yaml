@@ -5,8 +5,8 @@
 # S3 bucket and path settings
 s3:
   bucket_name: "ais-pipeline-data-10179bbf-us-east-1"
-  input_prefix: "data/01_raw/ais_dk/raw/"
-  output_prefix: "data/03_primary/cleaned_ais/"
+  input_prefix: "raw/"
+  output_prefix: "cleaned/"
 
 # Data processing parameters
 processing:
