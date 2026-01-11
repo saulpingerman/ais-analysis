@@ -1,0 +1,57 @@
+# Production configuration for AIS Data Processing Pipeline
+# Based on Technical Implementation Plan
+
+data:
+  source_url: "http://web.ais.dk/aisdata/"
+  file_pattern: "aisdk-{date}.zip"
+  date_format: "%Y-%m-%d"
+
+cleaning:
+  # Track segmentation
+  track_gap_hours: 4.0
+  min_track_points: 2
+
+  # Coordinate bounds (Danish EEZ)
+  bounds:
+    lat_min: 54.0
+    lat_max: 58.5
+    lon_min: 7.0
+    lon_max: 16.0
+
+  # Velocity filtering
+  max_velocity_knots: 50.0
+  velocity_by_ship_type:
+    cargo: 25.0
+    tanker: 20.0
+    passenger: 35.0
+    fishing: 15.0
+    default: 50.0
+
+  # MMSI collision detection
+  collision:
+    distance_threshold_km: 50.0
+    dbscan_eps_km: 5.0
+    min_bounce_count: 3
+    lookback_window: 10
+
+storage:
+  s3_bucket: "your-ais-bucket-name"  # Update with your S3 bucket
+  raw_prefix: "raw/"
+  cleaned_prefix: "cleaned/"
+  state_prefix: "state/"
+
+  # Local working directory
+  local_working_dir: "/home/ubuntu/ais-working"
+
+output:
+  format: "parquet"
+  compression: "zstd"
+  compression_level: 3
+  partition_by: ["year", "month", "day"]
+  target_file_size_mb: 200
+  row_group_size: 100000
+
+processing:
+  batch_size_days: 7
+  checkpoint_interval: 1
+  num_workers: 8

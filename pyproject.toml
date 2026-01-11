@@ -1,6 +1,6 @@
 [project]
 name = "ais-analysis"
-version = "2.0.0"
+version = "3.0.0"
 description = "High-performance S3-based pipeline for processing AIS data from the Danish Maritime Authority"
 authors = [
     {name = "Paul Singerman", email = "saulpingerman@users.noreply.github.com"}
@@ -11,7 +11,7 @@ requires-python = ">=3.9"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License", 
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -20,19 +20,23 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Topic :: Scientific/Engineering :: GIS",
 ]
-keywords = ["ais", "maritime", "data-processing", "s3", "aws", "analytics"]
+keywords = ["ais", "maritime", "data-processing", "s3", "aws", "analytics", "vessel-tracking"]
 
 dependencies = [
-    "polars==1.30.0",
-    "pyarrow==20.0.0", 
-    "pandas==2.3.0",
+    "polars>=1.30.0",
+    "pyarrow>=20.0.0",
+    "pandas>=2.0.0",
     "boto3",
-    "PyYAML==6.0",
-    "geopy==2.4.1",
-    "tqdm==4.67.1",
+    "PyYAML>=6.0",
+    "geopy>=2.4.0",
+    "tqdm>=4.60.0",
     "tabulate",
     "requests",
-    "matplotlib==3.9.4",
+    "scikit-learn>=1.0.0",
+    "pydantic>=2.0.0",
+    "typer>=0.9.0",
+    "s3fs>=2023.0.0",
+    "fsspec>=2023.0.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +47,9 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.5.0",
 ]
+viz = [
+    "matplotlib>=3.9.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/saulpingerman/ais-analysis"
@@ -51,19 +58,28 @@ Issues = "https://github.com/saulpingerman/ais-analysis/issues"
 
 [project.scripts]
 ais-download = "scripts.download_ais_data:main"
-ais-process = "scripts.s3_ais_processor:main"
+ais-process-legacy = "scripts.s3_ais_processor:main"
+ais-pipeline = "ais_pipeline.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["scripts", "tests"]
+packages = ["src/ais_pipeline", "scripts", "tests"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/scripts",
+    "/tests",
+    "/config",
+]
 
 [tool.uv]
 dev-dependencies = [
     "pytest>=7.0.0",
-    "pytest-cov>=4.0.0", 
+    "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
@@ -76,20 +92,15 @@ target-version = ['py39']
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "FA", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SLOT", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "FLY", "NPY", "RUF"]
-ignore = ["E501", "COM812", "ISC001"]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

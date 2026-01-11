@@ -83,3 +83,12 @@ ehthumbs_vista.db
 # --- Secrets ---
 *.env
 credentials*
+
+# --- Project-specific ---
+# Local working directory
+/ais-working/
+*.parquet
+*.pkl
+
+# Lock files (regenerated on install)
+uv.lock

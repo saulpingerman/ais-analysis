@@ -1,179 +1,191 @@
 # AIS Data Processing Pipeline
 
-High-performance S3-based pipeline for processing Automatic Identification System (AIS) data from the Danish Maritime Authority.
+A high-performance, production-ready pipeline for processing AIS (Automatic Identification System) maritime vessel tracking data from the Danish Maritime Authority.
 
 ## Features
 
-- **S3-Native Processing**: Direct ZIP file processing from S3 without local storage
-- **Track Continuity**: Maintains vessel track integrity across day boundaries  
-- **High Performance**: Vectorized operations using Polars for 10-100x speed improvements
-- **Memory Efficient**: Processes datasets larger than available RAM
-- **Data Validation**: Built-in quality checks and statistics
-- **Configurable**: Flexible parameters for different use cases
+- **High-throughput processing**: Handles 100M+ records efficiently using Polars
+- **MMSI collision detection**: Identifies and separates tracks when multiple vessels share the same MMSI
+- **Velocity-based outlier removal**: Detects and removes GPS glitches using the velocity-skip method
+- **Cross-file track continuity**: Maintains consistent track IDs across daily data files
+- **Partitioned Parquet output**: Optimized for downstream ML training with FSx for Lustre
+- **Resumable processing**: Checkpoint-based recovery for long-running jobs
+- **S3-native**: Direct integration with AWS S3 for input/output
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/saulpingerman/ais-analysis.git
+cd ais-analysis
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -e .
+```
 
 ## Quick Start
 
-### 1. Automated Setup
+### 1. Configure S3 bucket
 
-```bash
-./setup.sh
-```
-
-This will install dependencies and guide you through configuration.
-
-### 2. Manual Setup (Alternative)
-
-Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-Configure AWS credentials:
-```bash
-aws configure
-```
-
-### 3. Download AIS Data
-
-Download data from Danish Maritime Authority:
-
-```bash
-# Download recent data (daily files)
-python scripts/download_ais_data.py --start-date 2024-03-01 --end-date 2024-03-31
-
-# Download historical data (monthly files)  
-python scripts/download_ais_data.py --start-date 2020-01-01 --end-date 2020-12-31
-
-# Or use the shell wrapper
-./scripts/fetch_ais_data.sh 2024-01-01 2024-01-31
-```
-
-### 4. Process AIS Data
-
-Process downloaded data from S3:
-
-```bash
-python scripts/s3_ais_processor.py \
-  --bucket your-bucket-name \
-  --input-prefix data/01_raw/ais_dk/raw/ \
-  --output-prefix data/03_primary/cleaned_ais/ \
-  --max-files 1
-```
-
-### 5. Interactive Examples
-
-Run guided examples:
-
-```bash
-python scripts/run_s3_pipeline.py
-```
-
-## Structure
-
-### Core Scripts (`scripts/`)
-- **`s3_ais_processor.py`** - Main S3-based AIS data processor
-- **`run_s3_pipeline.py`** - Interactive examples and guided usage
-- **`run_tests.py`** - Test runner for all validation tests
-- **`download_ais_data.py`** - Download AIS data from Danish Maritime Authority
-- **`fetch_ais_data.sh`** - Shell wrapper for easy data downloading
-
-### Testing & Validation (`tests/`)
-- **`comprehensive_test.py`** - Full pipeline validation suite
-- **`test_s3_processor.py`** - Basic system validation tests  
-- **`inspect_data.py`** - Data quality inspection and validation
-
-### Setup & Utilities
-- **`setup.sh`** - Automated setup script  
-- **`config.yaml`** - Configuration file
-- **`requirements.txt`** - Python dependencies
-
-## Configuration
-
-Edit `config.yaml` to adjust processing parameters:
+Edit `config/production.yaml`:
 
 ```yaml
-processing:
-  speed_thresh: 80.0      # Max speed in knots
-  gap_hours: 6.0          # Time gap for new tracks  
-  interpolate: false      # Enable interpolation
-  interpolate_interval: 10 # Minutes between points
-
-s3:
-  bucket_name: "your-bucket-name"
-  input_prefix: "data/01_raw/ais_dk/raw/"
-  output_prefix: "data/03_primary/cleaned_ais/"
+storage:
+  s3_bucket: "your-ais-bucket"
+  raw_prefix: "raw/"
+  cleaned_prefix: "cleaned/"
+  state_prefix: "state/"
 ```
 
-## Data Pipeline
-
-```
-DMA Download → S3 Storage → CSV Extraction → Data Cleaning → Speed Filtering 
-      ↓              ↓             ↓
-   download_ais_data.py  →  s3_ais_processor.py  →  Track Creation → Validation → S3 Parquet Output
-```
-
-### Processing Steps
-
-1. **Data Download**: Downloads ZIP files from Danish Maritime Authority to S3
-2. **ZIP Extraction**: Streams CSV files from S3 ZIP archives  
-3. **Column Mapping**: Standardizes various AIS column formats
-4. **Data Cleaning**: Removes invalid coordinates and duplicates
-5. **Speed Filtering**: Filters impossible vessel speeds (configurable threshold)
-6. **Track Creation**: Groups position reports into voyages based on time gaps
-7. **State Management**: Maintains track continuity across processing runs
-8. **Validation**: Quality checks and statistics generation
-9. **Output**: Compressed Parquet files stored in S3
-
-## Performance
-
-- **Processing Speed**: ~500MB ZIP file in <40 seconds
-- **Memory Usage**: Constant ~1-2GB regardless of input size
-- **Compression**: 5x reduction in storage (ZIP → Parquet)
-- **Track Quality**: <3% single-point tracks (normal for stationary vessels)
-
-## Advanced Usage
-
-### Reset Track State
-
-Start fresh tracking (loses continuity):
+### 2. Download AIS data
 
 ```bash
-python scripts/s3_ais_processor.py --reset-state ...
+# Download one month of data from Danish Maritime Authority
+python scripts/download_ais_data.py --start-date 2024-01-01 --end-date 2024-01-31
 ```
 
-### Custom Parameters
+### 3. Run the processing pipeline
 
 ```bash
-python scripts/s3_ais_processor.py \
-  --speed-thresh 60.0 \
-  --gap-hours 4.0 \
-  --interpolate \
-  --interpolate-interval 15
+# Process all files
+python run_pipeline.py
+
+# Process with file limit (for testing)
+python run_pipeline.py --max-files 2
+
+# Resume from checkpoint
+python run_pipeline.py --resume
 ```
 
-### Data Inspection
+## Project Structure
 
-Analyze specific vessels:
-
-```bash
-python scripts/inspect_data.py --mmsi 123456789
 ```
+ais-analysis/
+├── config/
+│   └── production.yaml       # Production configuration
+├── src/
+│   └── ais_pipeline/
+│       ├── cleaning/         # Data cleaning modules
+│       │   ├── validator.py  # Basic validation (bounds, nulls)
+│       │   ├── outliers.py   # Velocity-skip outlier detection
+│       │   ├── collision.py  # MMSI collision detection (DBSCAN)
+│       │   └── segmentation.py
+│       ├── state/            # State management
+│       │   ├── continuity.py # Cross-file track continuity
+│       │   └── checkpoint.py # Processing checkpoints
+│       ├── io/               # I/O modules
+│       │   ├── reader.py     # ZIP/CSV reading from S3
+│       │   └── writer.py     # Partitioned Parquet output
+│       ├── utils/            # Utilities
+│       │   ├── geo.py        # Haversine distance
+│       │   └── velocity.py   # Speed calculations
+│       ├── config.py         # Configuration management
+│       ├── pipeline.py       # Main orchestration
+│       └── cli.py            # Command-line interface
+├── scripts/                  # Utility scripts
+│   ├── download_ais_data.py  # DMA data downloader
+│   └── s3_ais_processor.py   # Legacy processor
+├── tests/                    # Test suite
+├── run_pipeline.py           # Main entry point
+└── pyproject.toml
+```
+
+## Data Cleaning Pipeline
+
+The pipeline applies the following cleaning steps in order:
+
+### 1. Basic Validation
+- Remove null coordinates
+- Filter to Danish EEZ bounding box (54-58.5N, 7-16E)
+- Remove invalid SOG values (>102.3 knots)
+- Remove duplicate timestamps per MMSI
+
+### 2. MMSI Collision Detection
+Detects when two vessels share the same MMSI identifier by:
+- Identifying impossible "teleportation" patterns
+- Clustering positions using DBSCAN
+- Detecting bounce patterns between clusters
+- Splitting into separate tracks (MMSI_A, MMSI_B)
+
+### 3. Single Outlier Removal
+Uses the velocity-skip method:
+- For each position, calculates velocity to/from neighbors
+- If both incoming and outgoing velocities exceed threshold but skip velocity is reasonable, the position is an outlier
+
+### 4. Track Segmentation
+- Breaks tracks where time gap exceeds threshold (default: 4 hours)
+- Assigns unique track IDs: `{MMSI}_{segment_number}`
+- Maintains continuity across file boundaries
 
 ## Output Format
 
-Processed data is stored as Parquet files with the following schema:
+### Parquet Files
+```
+s3://bucket/cleaned/
+├── year=2024/month=01/day=01/tracks.parquet
+├── year=2024/month=01/day=02/tracks.parquet
+└── track_catalog.parquet
+```
 
-- **timestamp**: Position report timestamp
-- **mmsi**: Maritime Mobile Service Identity  
-- **lat/lon**: Coordinates (decimal degrees)
-- **sog**: Speed over ground (knots)
-- **cog**: Course over ground (degrees)
-- **heading**: Vessel heading (degrees)
-- **ship_type**: Vessel type
-- **track_id**: Unique track identifier (MMSI_sequence)
-- **date**: Processing date for partitioning
+### Schema
+| Column | Type | Description |
+|--------|------|-------------|
+| timestamp | datetime | Position timestamp (UTC) |
+| mmsi | int64 | Vessel identifier |
+| track_id | string | Unique track ID |
+| lat | float64 | Latitude |
+| lon | float64 | Longitude |
+| sog | float64 | Speed over ground (knots) |
+| cog | float64 | Course over ground (degrees) |
+| dt_seconds | float32 | Time since previous position |
+| cluster_assignment | string | A/B for collision tracks |
+
+### Track Catalog
+Provides metadata for efficient ML training:
+- Track start/end times
+- Number of positions
+- Duration in hours
+
+## Configuration
+
+Key parameters in `config/production.yaml`:
+
+```yaml
+cleaning:
+  track_gap_hours: 4.0          # Gap to start new track
+  max_velocity_knots: 50.0      # Max speed for outlier detection
+  collision:
+    distance_threshold_km: 50.0  # Min distance for collision check
+    min_bounce_count: 3          # Min bounces to confirm collision
+
+output:
+  compression: "zstd"
+  row_group_size: 100000
+```
+
+## Performance
+
+Tested on r6i.4xlarge (16 vCPU, 128 GB RAM):
+- **Throughput**: ~180,000 records/second
+- **8 days of data** (136M records): ~13 minutes
+
+## Legacy Scripts
+
+The `scripts/` directory contains the original processing scripts:
+
+- **`s3_ais_processor.py`** - Original S3-based processor
+- **`download_ais_data.py`** - Download data from Danish Maritime Authority
+- **`run_s3_pipeline.py`** - Interactive examples
 
 ## AWS Requirements
+
+- **S3 bucket** with appropriate IAM permissions
+- **EC2 instance** with IAM role for S3 access
+- Recommended: r6i.4xlarge or similar memory-optimized instance
 
 ### IAM Permissions
 
@@ -185,7 +197,7 @@ Processed data is stored as Parquet files with the following schema:
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
-        "s3:PutObject", 
+        "s3:PutObject",
         "s3:ListBucket"
       ],
       "Resource": [
@@ -197,39 +209,10 @@ Processed data is stored as Parquet files with the following schema:
 }
 ```
 
-## Troubleshooting
-
-### Common Issues
-
-1. **S3 Access Denied**: Check AWS credentials and IAM permissions
-2. **Memory Errors**: Reduce processing chunk size in config
-3. **Empty Output**: Verify input file format and date range
-4. **Slow Processing**: Check network connectivity and AWS region
-
-### Testing & Validation
-
-Run all tests:
-```bash
-python scripts/run_tests.py --bucket your-bucket-name
-```
-
-Or run individual tests:
-
-Basic system validation:
-```bash
-python tests/test_s3_processor.py
-```
-
-Comprehensive pipeline testing:
-```bash
-python tests/comprehensive_test.py --bucket your-bucket-name --max-days 2
-```
-
-Data quality inspection:
-```bash
-python tests/inspect_data.py --bucket your-bucket-name
-```
-
 ## License
 
-See LICENSE file for details.
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Data Source
+
+AIS data provided by the [Danish Maritime Authority](http://web.ais.dk/aisdata/).

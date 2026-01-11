@@ -4,7 +4,7 @@
 # --- S3 AIS Processor Configuration ---
 # S3 bucket and path settings
 s3:
-  bucket_name: "ais-pipeline-data-10179bbf-us-east-1"
+  bucket_name: "your-ais-bucket-name"  # Update with your S3 bucket
   input_prefix: "raw/"
   output_prefix: "cleaned/"
 
