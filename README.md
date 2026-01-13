@@ -170,8 +170,21 @@ output:
 ## Performance
 
 Tested on r6i.4xlarge (16 vCPU, 128 GB RAM):
-- **Throughput**: ~180,000 records/second
-- **8 days of data** (136M records): ~13 minutes
+- **Throughput**: ~156,000 records/second
+- **69 days of data** (1.1B records): ~2 hours
+
+### Latest Processing Run Statistics
+| Metric | Value |
+|--------|-------|
+| Files processed | 69 days (Dec 1, 2024 - Feb 7, 2025) |
+| Input records | 1.11 billion |
+| Output records | 579 million |
+| Records filtered (outside EEZ) | 527.6 million |
+| Outliers removed | 15,285 |
+| MMSI collisions detected | 32 |
+| Unique vessels | 9,809 |
+| Unique tracks | 50,502 |
+| Output size | 8.2 GB (compressed Parquet) |
 
 ## Legacy Scripts
 
@@ -215,4 +228,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Data Source
 
-AIS data provided by the [Danish Maritime Authority](http://web.ais.dk/aisdata/).
+AIS data provided by the [Danish Maritime Authority](http://aisdata.ais.dk/).

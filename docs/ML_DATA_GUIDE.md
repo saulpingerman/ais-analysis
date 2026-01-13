@@ -8,12 +8,12 @@ This document provides everything needed to work with the processed AIS vessel t
 
 ### S3 Bucket Structure
 ```
-s3://ais-pipeline-data-10179bbf-us-east-1/
+s3://your-ais-bucket/
 ├── cleaned/
-│   ├── year=2025/month=01/day=01/tracks.parquet
-│   ├── year=2025/month=02/day=01/tracks.parquet
-│   ├── year=2025/month=02/day=02/tracks.parquet
-│   ├── ... (one file per day)
+│   ├── year=2024/month=12/day=01/tracks.parquet
+│   ├── year=2024/month=12/day=02/tracks.parquet
+│   ├── ... (Dec 2024 + Jan 2025 + Feb 1-7 2025)
+│   ├── year=2025/month=02/day=07/tracks.parquet
 │   └── track_catalog.parquet
 └── state/
     ├── track_continuity.json
@@ -33,7 +33,7 @@ import polars as pl
 import s3fs
 
 fs = s3fs.S3FileSystem()
-df = pl.read_parquet("s3://ais-pipeline-data-10179bbf-us-east-1/cleaned/year=2025/month=02/day=01/tracks.parquet")
+df = pl.read_parquet("s3://your-ais-bucket/cleaned/year=2025/month=02/day=01/tracks.parquet")
 ```
 
 ---
@@ -89,12 +89,11 @@ A **track** is a continuous sequence of positions from a single vessel, broken w
 - Collision: `{MMSI}_{cluster}_{segment}` (e.g., `2579999_A_0`, `2579999_B_0`)
 
 ### Track Statistics (from current data)
-- Total tracks: ~10,784
-- Unique vessels: ~5,000
-- Average positions per track: ~6,800
-- Average duration: ~39 hours
+- Total tracks: ~50,502
+- Unique vessels: ~9,809
+- Average positions per track: ~11,500
 - Min positions: 2 (configurable threshold)
-- Max positions: ~236,000
+- Date range: Dec 1, 2024 - Feb 7, 2025 (69 days)
 
 ---
 
@@ -114,7 +113,7 @@ A **track** is a continuous sequence of positions from a single vessel, broken w
 - Some tracks may span multiple days (track_id is consistent across files)
 
 ### MMSI Collision Tracks
-6 vessels were detected with MMSI collisions (two vessels sharing one ID):
+32 vessels were detected with MMSI collisions (two vessels sharing one ID):
 - These are split into separate tracks with `cluster_assignment` = "A" or "B"
 - Filter these out if you want only clean single-vessel tracks:
 ```python
@@ -135,8 +134,8 @@ data_path = Path("/mnt/fsx/cleaned")
 parquet_files = list(data_path.glob("year=*/month=*/day=*/tracks.parquet"))
 df = pl.concat([pl.read_parquet(f) for f in parquet_files])
 
-# Or via S3 directly
-df = pl.read_parquet("s3://ais-pipeline-data-10179bbf-us-east-1/cleaned/year=2025/**/*.parquet")
+# Or via S3 directly (use ** to get all years)
+df = pl.read_parquet("s3://your-ais-bucket/cleaned/year=*/**/*.parquet")
 ```
 
 ### Load Track Catalog for Sampling
@@ -154,7 +153,7 @@ print(f"Tracks with 100+ positions: {valid_tracks.height}")
 track_ids = ["219007898_0", "220279000_0", "211833390_5"]
 
 # Load all data and filter
-df = pl.read_parquet("/mnt/fsx/cleaned/year=2025/**/*.parquet")
+df = pl.read_parquet("/mnt/fsx/cleaned/year=*/**/*.parquet")
 tracks = df.filter(pl.col("track_id").is_in(track_ids))
 ```
 
@@ -278,13 +277,16 @@ df = df.with_columns([
 
 | Metric | Value |
 |--------|-------|
-| Total records | ~73 million |
-| Total tracks | ~10,784 |
-| Unique vessels | ~5,000 |
-| Date range | Jan 1 - Feb 7, 2025 |
-| File sizes | 97-136 MB per day |
-| Total size | ~1 GB (compressed Parquet) |
+| Total records | 579 million |
+| Total tracks | 50,502 |
+| Unique vessels | 9,809 |
+| Date range | Dec 1, 2024 - Feb 7, 2025 (69 days) |
+| File sizes | 100-150 MB per day |
+| Total size | 8.2 GB (compressed Parquet) |
 | Compression | zstd |
+| Raw input size | 1.11 billion records |
+| Records filtered | 527.6M (outside Danish EEZ) |
+| Outliers removed | 15,285 |
 
 ---
 
@@ -292,7 +294,7 @@ df = df.with_columns([
 
 ### File Paths
 ```
-S3 Bucket: ais-pipeline-data-10179bbf-us-east-1
+S3 Bucket: your-ais-bucket
 Track data: cleaned/year=YYYY/month=MM/day=DD/tracks.parquet
 Catalog: cleaned/track_catalog.parquet
 ```

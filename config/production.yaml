@@ -2,8 +2,8 @@
 # Based on Technical Implementation Plan
 
 data:
-  source_url: "http://web.ais.dk/aisdata/"
-  file_pattern: "aisdk-{date}.zip"
+  source_url: "http://aisdata.ais.dk/"
+  file_pattern: "{year}/aisdk-{date}.zip"
   date_format: "%Y-%m-%d"
 
 cleaning:
@@ -35,7 +35,7 @@ cleaning:
     lookback_window: 10
 
 storage:
-  s3_bucket: "your-ais-bucket-name"  # Update with your S3 bucket
+  s3_bucket: "your-ais-bucket-name"
   raw_prefix: "raw/"
   cleaned_prefix: "cleaned/"
   state_prefix: "state/"

@@ -46,7 +46,8 @@ class AISDataDownloader:
     def __init__(self, bucket_name: str, s3_prefix: str = "data/01_raw/ais_dk/raw/"):
         self.bucket_name = bucket_name
         self.s3_prefix = s3_prefix.rstrip('/') + '/'
-        self.base_url = "http://web.ais.dk/aisdata/"
+        # Updated URL - DMA moved data to S3-hosted site
+        self.base_url = "http://aisdata.ais.dk/"
         
         # Initialize S3 client
         try:
@@ -83,35 +84,37 @@ class AISDataDownloader:
             return set()
     
     def generate_file_list(self, start_date: datetime, end_date: datetime) -> List[str]:
-        """Generate list of expected AIS filenames for date range."""
+        """Generate list of expected AIS filenames for date range.
+
+        Returns paths including year subdirectory (e.g., '2024/aisdk-2024-01.zip')
+        """
         files = []
         current_date = start_date
-        
+
         while current_date <= end_date:
             year = current_date.year
             month = current_date.month
             day = current_date.day
-            
+
             # Determine if we expect daily or monthly files
-            # Daily files started around March 2024 (update this based on actual data)
-            # For now, let's be conservative and assume daily starting 2024-03
+            # Daily files started around March 2024
             if year >= 2024 and (year > 2024 or month >= 3):
                 # Daily files
-                filename = f"aisdk-{year:04d}-{month:02d}-{day:02d}.zip"
+                filename = f"{year}/aisdk-{year:04d}-{month:02d}-{day:02d}.zip"
                 files.append(filename)
                 current_date += timedelta(days=1)
             else:
                 # Monthly files - only add once per month
-                filename = f"aisdk-{year:04d}-{month:02d}.zip"
+                filename = f"{year}/aisdk-{year:04d}-{month:02d}.zip"
                 if filename not in files:  # Avoid duplicates when spanning months
                     files.append(filename)
-                
+
                 # Move to first day of next month to avoid infinite loop
                 if month == 12:
                     current_date = datetime(year + 1, 1, 1)
                 else:
                     current_date = datetime(year, month + 1, 1)
-        
+
         return files
     
     def check_file_exists_remote(self, filename: str) -> bool:
@@ -125,9 +128,16 @@ class AISDataDownloader:
             return False
     
     def download_file(self, filename: str, temp_dir: Path) -> bool:
-        """Download file from DMA to temporary directory."""
+        """Download file from DMA to temporary directory.
+
+        Args:
+            filename: Remote path (may include year prefix like '2024/aisdk-2024-01.zip')
+            temp_dir: Local directory to save file
+        """
         url = f"{self.base_url}{filename}"
-        local_path = temp_dir / filename
+        # Save with base filename only (strip year prefix)
+        base_filename = filename.split('/')[-1] if '/' in filename else filename
+        local_path = temp_dir / base_filename
         
         try:
             logger.info(f"Downloading {filename}...")
@@ -161,11 +171,18 @@ class AISDataDownloader:
             return False
     
     def upload_to_s3(self, local_path: Path, filename: str) -> bool:
-        """Upload file to S3 bucket."""
-        s3_key = f"{self.s3_prefix}{filename}"
-        
+        """Upload file to S3 bucket.
+
+        Args:
+            local_path: Path to local file
+            filename: Filename (may include year prefix like '2024/aisdk-2024-01.zip')
+        """
+        # Strip year prefix for S3 key (e.g., '2024/aisdk-2024-01.zip' -> 'aisdk-2024-01.zip')
+        base_filename = filename.split('/')[-1] if '/' in filename else filename
+        s3_key = f"{self.s3_prefix}{base_filename}"
+
         try:
-            logger.info(f"Uploading {filename} to S3...")
+            logger.info(f"Uploading {base_filename} to S3...")
             self.s3_client.upload_file(
                 str(local_path),
                 self.bucket_name,
@@ -174,9 +191,9 @@ class AISDataDownloader:
             )
             logger.info(f"✅ Uploaded to s3://{self.bucket_name}/{s3_key}")
             return True
-            
+
         except Exception as e:
-            logger.error(f"❌ Failed to upload {filename}: {e}")
+            logger.error(f"❌ Failed to upload {base_filename}: {e}")
             return False
     
     def download_date_range(self, start_date: datetime, end_date: datetime, 
@@ -196,40 +213,43 @@ class AISDataDownloader:
         # Get existing S3 files
         existing_s3_files = set() if force_redownload else self.get_existing_s3_files()
         
-        # Filter out files that already exist
+        # Filter out files that already exist (compare base filenames only)
         files_to_download = []
         for filename in expected_files:
-            if filename in existing_s3_files:
-                logger.info(f"⏭️  Skipping {filename} (already exists in S3)")
+            # Strip year prefix for comparison with existing S3 files
+            base_filename = filename.split('/')[-1] if '/' in filename else filename
+            if base_filename in existing_s3_files:
+                logger.info(f"⏭️  Skipping {base_filename} (already exists in S3)")
             else:
                 files_to_download.append(filename)
-        
+
         if not files_to_download:
             logger.info("🎉 All files already exist in S3!")
             return 0, len(expected_files)
-        
+
         logger.info(f"Need to download {len(files_to_download)} files")
-        
+
         # Download missing files
         successful_downloads = 0
         skipped_files = len(expected_files) - len(files_to_download)
-        
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            
+
             for filename in files_to_download:
                 # Check if file exists on remote server
                 if not self.check_file_exists_remote(filename):
                     logger.warning(f"⚠️  {filename} not found on server, skipping")
                     continue
-                
-                # Download file
+
+                # Download file (base filename used for local storage)
+                base_filename = filename.split('/')[-1] if '/' in filename else filename
                 if self.download_file(filename, temp_path):
                     # Upload to S3
-                    local_file = temp_path / filename
+                    local_file = temp_path / base_filename
                     if self.upload_to_s3(local_file, filename):
                         successful_downloads += 1
-                    
+
                     # Clean up local file
                     if local_file.exists():
                         local_file.unlink()

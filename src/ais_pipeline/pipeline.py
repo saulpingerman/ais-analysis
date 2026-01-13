@@ -292,15 +292,29 @@ class AISPipeline:
 
         logger.info(f"Processing {len(pending_files)} files (of {len(all_files)} total)")
 
-        # Process files
-        all_results = []
+        # Process files - write incrementally to avoid OOM
+        all_catalogs = []
 
         for s3_key in tqdm(pending_files, desc="Processing files"):
             try:
                 result_df = self.process_file(s3_key)
 
                 if result_df is not None and not result_df.is_empty():
-                    all_results.append(result_df)
+                    # Write this file's output immediately (incremental write)
+                    write_partitioned_parquet(
+                        result_df,
+                        self.config.storage.s3_bucket,
+                        self.config.storage.cleaned_prefix,
+                        compression=self.config.output.compression,
+                        compression_level=self.config.output.compression_level,
+                        row_group_size=self.config.output.row_group_size,
+                        s3_client=self.s3_client,
+                    )
+
+                    # Collect catalog info (small - just metadata)
+                    file_catalog = generate_track_catalog(result_df, self.config.storage.cleaned_prefix)
+                    if not file_catalog.is_empty():
+                        all_catalogs.append(file_catalog)
 
                 # Update checkpoint
                 self.checkpoint.mark_processed(s3_key)
@@ -315,30 +329,15 @@ class AISPipeline:
                 logger.error(f"Error processing {s3_key}: {e}")
                 self.checkpoint.mark_failed(s3_key)
 
-        # Combine all results
-        if all_results:
-            final_df = pl.concat(all_results, how="diagonal")
-
-            # Write partitioned output
-            write_partitioned_parquet(
-                final_df,
+        # Write combined track catalog at the end (small - just metadata)
+        if all_catalogs:
+            combined_catalog = pl.concat(all_catalogs, how="diagonal")
+            write_track_catalog(
+                combined_catalog,
                 self.config.storage.s3_bucket,
                 self.config.storage.cleaned_prefix,
-                compression=self.config.output.compression,
-                compression_level=self.config.output.compression_level,
-                row_group_size=self.config.output.row_group_size,
-                s3_client=self.s3_client,
+                self.s3_client,
             )
-
-            # Generate and write track catalog
-            catalog_df = generate_track_catalog(final_df, self.config.storage.cleaned_prefix)
-            if not catalog_df.is_empty():
-                write_track_catalog(
-                    catalog_df,
-                    self.config.storage.s3_bucket,
-                    self.config.storage.cleaned_prefix,
-                    self.s3_client,
-                )
 
         # Save final state
         self.state.last_file_processed = pending_files[-1] if pending_files else ""
