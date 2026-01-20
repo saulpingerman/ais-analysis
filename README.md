@@ -170,21 +170,23 @@ output:
 ## Performance
 
 Tested on r6i.4xlarge (16 vCPU, 128 GB RAM):
-- **Throughput**: ~156,000 records/second
-- **69 days of data** (1.1B records): ~2 hours
+- **Throughput**: ~150,000 records/second
+- **363 days of data** (6.9B records): ~12 hours
 
 ### Latest Processing Run Statistics
 | Metric | Value |
 |--------|-------|
-| Files processed | 69 days (Dec 1, 2024 - Feb 7, 2025) |
-| Input records | 1.11 billion |
-| Output records | 579 million |
-| Records filtered (outside EEZ) | 527.6 million |
-| Outliers removed | 15,285 |
-| MMSI collisions detected | 32 |
-| Unique vessels | 9,809 |
-| Unique tracks | 50,502 |
-| Output size | 8.2 GB (compressed Parquet) |
+| Files processed | 363 days (Mar 1, 2024 - Feb 26, 2025) |
+| Input records | 6.9 billion |
+| Output records | 3.74 billion |
+| Records filtered (outside EEZ) | 3.17 billion |
+| Outliers removed | 99,206 |
+| MMSI collisions detected | 143 |
+| Unique vessels | ~38,000 |
+| Unique tracks | ~650,000 |
+| Output size | 50 GB (compressed Parquet) |
+
+**Note:** DMA provides monthly aggregate files for Jan-Feb 2024 which are too large for single-file processing. Daily files are available from March 2024 onwards.
 
 ## Legacy Scripts
 

@@ -10,10 +10,10 @@ This document provides everything needed to work with the processed AIS vessel t
 ```
 s3://your-ais-bucket/
 ├── cleaned/
-│   ├── year=2024/month=12/day=01/tracks.parquet
-│   ├── year=2024/month=12/day=02/tracks.parquet
-│   ├── ... (Dec 2024 + Jan 2025 + Feb 1-7 2025)
-│   ├── year=2025/month=02/day=07/tracks.parquet
+│   ├── year=2024/month=03/day=01/tracks.parquet
+│   ├── year=2024/month=03/day=02/tracks.parquet
+│   ├── ... (363 days: Mar 2024 - Feb 2025)
+│   ├── year=2025/month=02/day=26/tracks.parquet
 │   └── track_catalog.parquet
 └── state/
     ├── track_continuity.json
@@ -89,11 +89,11 @@ A **track** is a continuous sequence of positions from a single vessel, broken w
 - Collision: `{MMSI}_{cluster}_{segment}` (e.g., `2579999_A_0`, `2579999_B_0`)
 
 ### Track Statistics (from current data)
-- Total tracks: ~50,502
-- Unique vessels: ~9,809
-- Average positions per track: ~11,500
+- Total tracks: ~650,000
+- Unique vessels: ~38,000
+- Average positions per track: ~5,700
 - Min positions: 2 (configurable threshold)
-- Date range: Dec 1, 2024 - Feb 7, 2025 (69 days)
+- Date range: Mar 1, 2024 - Feb 26, 2025 (363 days, ~1 year)
 
 ---
 
@@ -113,7 +113,7 @@ A **track** is a continuous sequence of positions from a single vessel, broken w
 - Some tracks may span multiple days (track_id is consistent across files)
 
 ### MMSI Collision Tracks
-32 vessels were detected with MMSI collisions (two vessels sharing one ID):
+143 vessels were detected with MMSI collisions (two vessels sharing one ID):
 - These are split into separate tracks with `cluster_assignment` = "A" or "B"
 - Filter these out if you want only clean single-vessel tracks:
 ```python
@@ -277,16 +277,16 @@ df = df.with_columns([
 
 | Metric | Value |
 |--------|-------|
-| Total records | 579 million |
-| Total tracks | 50,502 |
-| Unique vessels | 9,809 |
-| Date range | Dec 1, 2024 - Feb 7, 2025 (69 days) |
+| Total records | 3.74 billion |
+| Total tracks | ~650,000 |
+| Unique vessels | ~38,000 |
+| Date range | Mar 1, 2024 - Feb 26, 2025 (363 days) |
 | File sizes | 100-150 MB per day |
-| Total size | 8.2 GB (compressed Parquet) |
+| Total size | 50 GB (compressed Parquet) |
 | Compression | zstd |
-| Raw input size | 1.11 billion records |
-| Records filtered | 527.6M (outside Danish EEZ) |
-| Outliers removed | 15,285 |
+| Raw input size | 6.9 billion records |
+| Records filtered | 3.17B (outside Danish EEZ) |
+| Outliers removed | 99,206 |
 
 ---
 
