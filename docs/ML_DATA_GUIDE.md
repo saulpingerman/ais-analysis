@@ -273,7 +273,110 @@ df = df.with_columns([
 
 ---
 
-## 8. Data Volume Summary
+## 8. Track-Sharded Format (Recommended for ML)
+
+The day-partitioned format splits tracks across multiple files, which is inefficient for ML training where you need complete tracks. Use the **track-sharded format** instead.
+
+### Why Shard by Track?
+
+| Format | Pros | Cons |
+|--------|------|------|
+| Day-partitioned | Easy incremental updates | Tracks split across files |
+| Track-sharded | Complete tracks per shard, parallel loading | One-time conversion needed |
+
+### Converting to Sharded Format
+
+Run on your ML instance (requires ~128GB RAM to hold all data):
+
+```bash
+cd ais-analysis
+source venv/bin/activate
+
+# Convert day-partitioned to track-sharded (256 shards)
+python scripts/shard_by_track.py \
+    --bucket your-ais-bucket \
+    --input-prefix cleaned/ \
+    --output-prefix sharded/ \
+    --num-shards 256
+```
+
+### Sharded Output Structure
+
+```
+s3://your-ais-bucket/sharded/
+├── shard=000/tracks.parquet  (~200MB, ~2,500 complete tracks)
+├── shard=001/tracks.parquet
+├── ...
+├── shard=255/tracks.parquet
+├── catalog.parquet           (track metadata with shard assignments)
+└── shard_index.parquet       (shard statistics)
+```
+
+### Loading Sharded Data
+
+```python
+from ais_pipeline.io.shard_loader import ShardedAISLoader, ShardedDataset
+
+# Initialize loader with filtering
+loader = ShardedAISLoader(
+    bucket="your-ais-bucket",
+    prefix="sharded/",
+    min_positions=100,      # Filter short tracks
+    min_duration_hours=1.0, # Filter short duration
+)
+
+print(f"Tracks matching filter: {loader.get_num_tracks():,}")
+print(f"Shards to load: {len(loader.get_shard_ids())}")
+
+# Option 1: Iterate over tracks in a shard
+for shard_id in loader.get_shard_ids():
+    for track_df in loader.load_shard(shard_id):
+        # track_df is a complete track, sorted by timestamp
+        features = track_df.select(["lat", "lon", "sog", "cog"]).to_numpy()
+
+# Option 2: Load specific track by ID
+track = loader.load_track("219007898_0")
+
+# Option 3: PyTorch Dataset
+from torch.utils.data import DataLoader
+
+dataset = ShardedDataset(loader, max_seq_len=512)
+dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=4)
+
+for batch in dataloader:
+    features = batch["features"]  # (B, seq_len, num_features)
+    mask = batch["mask"]          # (B, seq_len) - 1 for real, 0 for padding
+```
+
+### Parallel Loading for Multi-GPU Training
+
+```python
+# Each worker loads different shards
+shard_ids = loader.get_shard_ids()
+worker_shards = shard_ids[worker_id::num_workers]
+
+for shard_id in worker_shards:
+    shard_df = loader.load_shard_as_dataframe(shard_id)
+    # Process entire shard
+```
+
+### Catalog Schema
+
+The `catalog.parquet` contains metadata for fast filtering:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| track_id | string | Unique track identifier |
+| mmsi | int64 | Vessel MMSI |
+| shard_id | int32 | Which shard contains this track |
+| num_positions | int64 | Number of positions in track |
+| start_time | datetime | First timestamp |
+| end_time | datetime | Last timestamp |
+| duration_hours | float64 | Track duration |
+
+---
+
+## 9. Data Volume Summary (Day-Partitioned Format)
 
 | Metric | Value |
 |--------|-------|
@@ -290,7 +393,7 @@ df = df.with_columns([
 
 ---
 
-## 9. Quick Reference
+## 10. Quick Reference
 
 ### File Paths
 ```
