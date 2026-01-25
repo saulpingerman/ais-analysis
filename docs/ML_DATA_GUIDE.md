@@ -9,16 +9,23 @@ This document provides everything needed to work with the processed AIS vessel t
 ### S3 Bucket Structure
 ```
 s3://your-ais-bucket/
-├── cleaned/
+├── cleaned/                    # Day-partitioned (for incremental updates)
 │   ├── year=2024/month=03/day=01/tracks.parquet
-│   ├── year=2024/month=03/day=02/tracks.parquet
 │   ├── ... (363 days: Mar 2024 - Feb 2025)
-│   ├── year=2025/month=02/day=26/tracks.parquet
 │   └── track_catalog.parquet
+├── sharded/                    # Track-sharded (RECOMMENDED for ML training)
+│   ├── shard=000/tracks.parquet
+│   ├── shard=001/tracks.parquet
+│   ├── ... (256 shards)
+│   ├── shard=255/tracks.parquet
+│   ├── catalog.parquet         # Track metadata with shard assignments
+│   └── shard_index.parquet     # Shard statistics
 └── state/
     ├── track_continuity.json
     └── processing_checkpoint.json
 ```
+
+**For ML training, use the `sharded/` directory** - it contains complete tracks per shard, optimized for parallel loading.
 
 ### FSx for Lustre Setup
 When mounting FSx for Lustre linked to this S3 bucket:
@@ -286,25 +293,42 @@ The day-partitioned format splits tracks across multiple files, which is ineffic
 
 ### Converting to Sharded Format
 
-Run on your ML instance (requires ~128GB RAM to hold all data):
+**Note:** The sharded data already exists at `s3://ais-pipeline-data-10179bbf-us-east-1/sharded/`. You only need to run this if re-sharding.
+
+Run on an instance with 128GB RAM. The script processes data in batches to avoid OOM:
 
 ```bash
 cd ais-analysis
 source venv/bin/activate
 
 # Convert day-partitioned to track-sharded (256 shards)
+# --shards-per-batch controls memory usage (lower = less memory, more passes)
 python scripts/shard_by_track.py \
     --bucket your-ais-bucket \
     --input-prefix cleaned/ \
     --output-prefix sharded/ \
-    --num-shards 256
+    --num-shards 256 \
+    --shards-per-batch 35
 ```
+
+The script supports resume - if interrupted, re-run and it will skip already-written shards.
+
+### Sharded Data Statistics
+
+| Metric | Value |
+|--------|-------|
+| Total shards | 256 |
+| Total tracks | 651,374 |
+| Total records | 3.02 billion |
+| Total size | 44.4 GB (compressed) |
+| Avg shard size | ~170 MB |
+| Avg tracks/shard | ~2,500 |
 
 ### Sharded Output Structure
 
 ```
 s3://your-ais-bucket/sharded/
-├── shard=000/tracks.parquet  (~200MB, ~2,500 complete tracks)
+├── shard=000/tracks.parquet  (~170MB, ~2,500 complete tracks)
 ├── shard=001/tracks.parquet
 ├── ...
 ├── shard=255/tracks.parquet
