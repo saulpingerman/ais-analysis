@@ -135,19 +135,29 @@ class AISMDSDataset:
 
     Best for distributed, multi-node training.
     Requires: pip install mosaicml-streaming
+
+    Usage:
+        dataset = AISMDSDataset(
+            remote='s3://ais-pipeline-data-10179bbf-us-east-1/mds',
+            local='/tmp/mds-cache',
+            batch_size=64,
+        )
+        for batch in dataset:
+            # batch: (64, 928, 5) torch.Tensor
+            input_seq, target_seq = split_input_target(batch)
     """
 
     def __init__(
         self,
-        local: str,
-        remote: Optional[str] = None,
+        remote: str = "s3://ais-pipeline-data-10179bbf-us-east-1/mds",
+        local: str = "/tmp/mds-cache",
         batch_size: int = 64,
         shuffle: bool = True,
     ):
         """
         Args:
+            remote: Remote S3 path to MDS data
             local: Local cache directory
-            remote: Remote S3 path (e.g., "s3://bucket/mds/")
             batch_size: Batch size
             shuffle: Whether to shuffle
         """
@@ -160,7 +170,6 @@ class AISMDSDataset:
             local=local,
             remote=remote,
             shuffle=shuffle,
-            batch_size=batch_size,
         )
         self.batch_size = batch_size
 
@@ -168,7 +177,7 @@ class AISMDSDataset:
         batch = []
         for sample in self.dataset:
             # Decode bytes to numpy
-            features = np.frombuffer(sample['features'], dtype=np.float32)
+            features = np.frombuffer(sample['features'], dtype=np.float32).copy()
             features = features.reshape(WINDOW_SIZE, NUM_FEATURES)
             batch.append(features)
 

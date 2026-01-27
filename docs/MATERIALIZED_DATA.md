@@ -10,37 +10,46 @@ The materialized data contains **109 million training samples** pre-shuffled glo
 
 ## Data Formats
 
-### Original Format (Large Shards - 2.7 GB each)
+### MosaicML MDS Format [RECOMMENDED]
+```
+s3://ais-pipeline-data-10179bbf-us-east-1/mds/
+├── worker_00/           # MDS shards from parallel conversion
+│   ├── index.json
+│   ├── shard.00000.mds.zstd   # ~22 MB each (64 MB uncompressed)
+│   ├── shard.00001.mds.zstd
+│   └── ...
+├── worker_01/
+├── ...
+├── worker_15/
+└── manifest.json        # Lists all worker directories
+```
+
+**Benefits:**
+- Memory-efficient streaming (~22 MB shards)
+- Built-in shuffling across entire dataset
+- Optimized for distributed training
+- Works great on 32GB GPU instances
+
+### Original Parquet Format (Large Shards - 2.7 GB each)
 ```
 s3://ais-pipeline-data-10179bbf-us-east-1/materialized/
-├── samples_000.parquet   # ~426K samples, 2.7 GB compressed, 7.9 GB in memory!
+├── samples_000.parquet   # ~426K samples, 2.7 GB compressed
 ├── ...
 ├── samples_255.parquet
 └── validation.parquet
 ```
 
-**WARNING:** These shards are too large for most GPU instances! Use the streaming format below.
-
-### Streaming Format (Small Shards - 64 MB each) [RECOMMENDED]
-```
-s3://ais-pipeline-data-10179bbf-us-east-1/streaming/
-├── shard_00000.parquet   # ~3,500 samples, 64 MB
-├── shard_00001.parquet
-├── ...
-├── shard_NNNNN.parquet   # ~6,500 shards total
-└── index.json
-```
-
-Convert using: `python scripts/convert_to_streaming.py --format parquet`
+**WARNING:** These shards expand to 25-30 GB peak memory! Not suitable for most GPU instances.
 
 ## Statistics
 
-| Metric | Original | Streaming |
-|--------|----------|-----------|
-| Training samples | 109M | 109M |
-| Shards | 256 | ~6,500 |
-| Shard size (compressed) | 2.7 GB | 64 MB |
-| **Shard size in memory** | **7.9 GB** | **~180 MB** |
+| Metric | Original Parquet | MDS Format |
+|--------|------------------|------------|
+| Training samples | 109M | 108.7M |
+| Total files | 256 | ~30,000 |
+| Shard size (compressed) | 2.7 GB | ~22 MB |
+| Total size | 645 GB | 632 GB |
+| **Peak memory per shard** | **25-30 GB** | **~200 MB** |
 | Safe for 32GB instance | NO | YES |
 
 ## Sample Format
@@ -71,123 +80,82 @@ Positions 128-927: Prediction horizon (MAX_HORIZON = 800)
 Total: 928 positions per sample
 ```
 
-## Loading Data (Memory-Efficient)
+## Loading Data
 
-### CRITICAL: Do NOT load full shards into memory!
+### MosaicML StreamingDataset (Recommended)
 
-Each shard is **7.9 GB in memory**. On a 32GB instance, loading a full shard will OOM.
-
-**Always use streaming with `iter_batches()`:**
-
-### Basic Streaming (Recommended)
 ```python
-import pyarrow.parquet as pq
+from streaming import StreamingDataset
+from torch.utils.data import DataLoader
 import numpy as np
 
-def stream_batches(shard_id: int, batch_size: int = 64):
-    """Stream batches from a shard without loading it all into memory."""
-    path = f"s3://ais-pipeline-data-10179bbf-us-east-1/materialized/samples_{shard_id:03d}.parquet"
-    pf = pq.ParquetFile(path)
+# Create dataset - reads from all worker directories automatically
+dataset = StreamingDataset(
+    remote='s3://ais-pipeline-data-10179bbf-us-east-1/mds',
+    local='/tmp/mds-cache',
+    shuffle=True,
+    batch_size=64,
+)
 
-    for batch in pf.iter_batches(batch_size=batch_size):
-        # Convert to numpy - only this batch is in memory
-        features = np.array(batch['features'].to_pylist(), dtype=np.float32)
-        features = features.reshape(-1, 928, 5)  # (batch_size, 928, 5)
-        yield features
+# Wrap in DataLoader
+loader = DataLoader(dataset, batch_size=64)
 
-# Usage
-for batch in stream_batches(shard_id=0, batch_size=64):
-    input_seq = batch[:, :128, :]   # (64, 128, 5)
-    target_seq = batch[:, 128:, :]  # (64, 800, 5)
+for batch in loader:
+    # Each sample is bytes - decode to numpy
+    features = np.frombuffer(batch['features'], dtype=np.float32)
+    features = features.reshape(-1, 928, 5)  # (batch_size, 928, 5)
+
+    input_seq = features[:, :128, :]   # (64, 128, 5)
+    target_seq = features[:, 128:, :]  # (64, 800, 5)
     # Train on this batch
 ```
 
-### PyTorch IterableDataset
+### Using the Provided Wrapper
+
 ```python
-import torch
-from torch.utils.data import IterableDataset, DataLoader
-import pyarrow.parquet as pq
-import numpy as np
+from ais_pipeline.io.streaming_loader import AISMDSDataset, normalize_batch, split_input_target
 
-class AISStreamingDataset(IterableDataset):
-    """Memory-efficient streaming dataset for AIS trajectories."""
+# Create dataset
+dataset = AISMDSDataset(
+    remote='s3://ais-pipeline-data-10179bbf-us-east-1/mds',
+    local='/tmp/mds-cache',
+    batch_size=64,
+    shuffle=True,
+)
 
-    def __init__(
-        self,
-        shard_ids: list[int],
-        batch_size: int = 64,
-        shuffle_shards: bool = True,
-    ):
-        self.shard_ids = shard_ids
-        self.batch_size = batch_size
-        self.shuffle_shards = shuffle_shards
-        self.bucket = "ais-pipeline-data-10179bbf-us-east-1"
-
-    def __iter__(self):
-        # Shuffle shard order each epoch
-        shard_order = list(self.shard_ids)
-        if self.shuffle_shards:
-            np.random.shuffle(shard_order)
-
-        for shard_id in shard_order:
-            path = f"s3://{self.bucket}/materialized/samples_{shard_id:03d}.parquet"
-            pf = pq.ParquetFile(path)
-
-            for batch in pf.iter_batches(batch_size=self.batch_size):
-                features = np.array(batch['features'].to_pylist(), dtype=np.float32)
-                features = features.reshape(-1, 928, 5)
-                yield torch.from_numpy(features)
-
-# Usage
-train_shards = list(range(256))
-dataset = AISStreamingDataset(train_shards, batch_size=64)
-loader = DataLoader(dataset, batch_size=None)  # batch_size=None because we handle it
-
-for batch in loader:
-    # batch: (64, 928, 5)
-    input_seq = batch[:, :128, :]
-    target_seq = batch[:, 128:, :]
-    # loss = model(input_seq, target_seq)
+for batch in dataset:
+    # batch: (64, 928, 5) torch.Tensor
+    batch = normalize_batch(batch)
+    input_seq, target_seq = split_input_target(batch)
+    # Train...
 ```
 
-### Multi-Worker Loading
+### Multi-GPU / Distributed Training
+
+MosaicML StreamingDataset handles distributed training automatically:
+
 ```python
-class AISMultiWorkerDataset(IterableDataset):
-    """Dataset that distributes shards across DataLoader workers."""
+from streaming import StreamingDataset
+import torch.distributed as dist
 
-    def __init__(self, shard_ids: list[int], batch_size: int = 64):
-        self.shard_ids = shard_ids
-        self.batch_size = batch_size
-        self.bucket = "ais-pipeline-data-10179bbf-us-east-1"
+# Each rank gets different samples automatically
+dataset = StreamingDataset(
+    remote='s3://ais-pipeline-data-10179bbf-us-east-1/mds',
+    local='/tmp/mds-cache',
+    shuffle=True,
+)
 
-    def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-
-        if worker_info is None:
-            my_shards = self.shard_ids
-        else:
-            # Each worker gets a subset of shards
-            my_shards = self.shard_ids[worker_info.id::worker_info.num_workers]
-
-        np.random.shuffle(my_shards)
-
-        for shard_id in my_shards:
-            path = f"s3://{self.bucket}/materialized/samples_{shard_id:03d}.parquet"
-            pf = pq.ParquetFile(path)
-
-            for batch in pf.iter_batches(batch_size=self.batch_size):
-                features = np.array(batch['features'].to_pylist(), dtype=np.float32)
-                features = features.reshape(-1, 928, 5)
-                yield torch.from_numpy(features)
-
-# Usage with 4 workers
-dataset = AISMultiWorkerDataset(list(range(256)), batch_size=64)
-loader = DataLoader(dataset, batch_size=None, num_workers=4, prefetch_factor=2)
+# Works with DistributedDataParallel out of the box
 ```
 
 ## Validation Data
 
+Validation data remains in parquet format:
+
 ```python
+import pyarrow.parquet as pq
+import numpy as np
+
 def stream_validation(batch_size: int = 64):
     """Stream validation batches."""
     path = "s3://ais-pipeline-data-10179bbf-us-east-1/materialized/validation.parquet"
@@ -197,6 +165,8 @@ def stream_validation(batch_size: int = 64):
         features = np.array(batch['features'].to_pylist(), dtype=np.float32)
         features = features.reshape(-1, 928, 5)
         yield features
+
+# ~313K validation samples
 ```
 
 ## Feature Engineering
@@ -308,6 +278,8 @@ Pre-shuffled approach:
 
 If you need to regenerate the materialized data (e.g., different window size):
 
+### Step 1: Materialize to Parquet (128GB instance, 2.5TB disk)
+
 ```bash
 cd ~/ais-analysis
 source ~/ais-env/bin/activate
@@ -321,4 +293,20 @@ python scripts/materialize_samples.py \
     --seed 42
 ```
 
-**Requirements:** 128GB RAM instance, 2.5TB disk space for temp files.
+### Step 2: Convert to MDS Format
+
+```bash
+python scripts/parallel_mds_convert.py \
+    --num-workers 16 \
+    --bucket ais-pipeline-data-10179bbf-us-east-1 \
+    --input-prefix materialized/ \
+    --output-base s3://ais-pipeline-data-10179bbf-us-east-1/mds
+```
+
+This takes ~6 hours with 16 workers on a 128GB instance.
+
+## Installation Requirements
+
+```bash
+pip install mosaicml-streaming pyarrow boto3 torch numpy
+```

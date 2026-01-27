@@ -136,6 +136,8 @@ def convert_to_mds(
     compression: str = 'zstd',
 ):
     """Convert to MosaicML MDS format for optimal streaming."""
+    import gc
+
     try:
         from streaming import MDSWriter
     except ImportError:
@@ -148,6 +150,9 @@ def convert_to_mds(
     }
 
     logger.info(f"Converting to MDS format at {output_dir}")
+    logger.info(f"Reading from s3://{bucket}/{input_prefix}")
+
+    total_samples = 0
 
     with MDSWriter(
         out=output_dir,
@@ -165,15 +170,28 @@ def convert_to_mds(
                 logger.error(f"Error opening {input_path}: {e}")
                 continue
 
-            for batch in pf.iter_batches(batch_size=1000):
+            shard_samples = 0
+            # Use smaller batches to reduce memory
+            for batch in pf.iter_batches(batch_size=500):
                 features_list = batch['features'].to_pylist()
 
                 for features in features_list:
                     # Store as raw bytes
                     features_bytes = np.array(features, dtype=np.float32).tobytes()
                     writer.write({'features': features_bytes})
+                    shard_samples += 1
 
-    logger.info("MDS conversion complete!")
+                # Clear batch from memory
+                del features_list
+                del batch
+
+            total_samples += shard_samples
+            logger.info(f"Shard {input_shard_id}: {shard_samples:,} samples (total: {total_samples:,})")
+
+            # Force garbage collection between shards
+            gc.collect()
+
+    logger.info(f"MDS conversion complete! Total samples: {total_samples:,}")
 
 
 def main():
