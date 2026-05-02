@@ -1,4 +1,4 @@
-# S3-Based AIS Data Processing Pipeline Dependencies
+# AIS Data Processing Pipeline Dependencies
 # Install with: pip install -r requirements.txt
 
 # Core data processing
@@ -6,15 +6,14 @@ polars==1.30.0
 pyarrow==20.0.0
 pandas==2.3.0
 
-# AWS S3 integration
-boto3
+# Config + utilities
 PyYAML==6.0
-
-# Utilities
 geopy==2.4.1
 tqdm==4.67.1
 tabulate
 requests
+scikit-learn>=1.0.0
+typer>=0.9.0
 
 # Optional visualization (for data inspection)
 matplotlib==3.9.4

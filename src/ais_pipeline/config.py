@@ -1,11 +1,18 @@
 """Configuration management for AIS pipeline."""
-import yaml
 import logging
-from pathlib import Path
-from typing import Dict, Any, Optional
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict
+
+import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _expand(p: str) -> str:
+    """Expand ~ and environment variables in a path string."""
+    return os.path.expandvars(os.path.expanduser(p))
 
 
 @dataclass
@@ -35,12 +42,25 @@ class CleaningConfig:
 
 @dataclass
 class StorageConfig:
-    """Storage configuration."""
-    s3_bucket: str = ""
-    raw_prefix: str = "raw/"
-    cleaned_prefix: str = "cleaned/"
-    state_prefix: str = "state/"
-    local_working_dir: str = "/home/ec2-user/ais-working"
+    """Local filesystem storage configuration.
+
+    All paths are absolute (with ~ and env var expansion applied on load).
+    """
+    raw_dir: str = "~/data/ais/raw"
+    clean_dir: str = "~/data/ais/clean"
+    state_dir: str = "~/data/ais/state"
+
+    @property
+    def raw_path(self) -> Path:
+        return Path(_expand(self.raw_dir))
+
+    @property
+    def clean_path(self) -> Path:
+        return Path(_expand(self.clean_dir))
+
+    @property
+    def state_path(self) -> Path:
+        return Path(_expand(self.state_dir))
 
 
 @dataclass
@@ -72,63 +92,48 @@ class PipelineConfig:
 
     @classmethod
     def from_yaml(cls, path: str) -> "PipelineConfig":
-        """Load configuration from YAML file.
-
-        Args:
-            path: Path to YAML config file
-
-        Returns:
-            PipelineConfig instance
-        """
         try:
             with open(path, "r") as f:
-                data = yaml.safe_load(f)
+                data = yaml.safe_load(f) or {}
         except FileNotFoundError:
             logger.warning(f"Config file {path} not found, using defaults")
             data = {}
-        except Exception as e:
-            logger.error(f"Error loading config: {e}")
-            data = {}
-
         return cls.from_dict(data)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PipelineConfig":
-        """Create configuration from dictionary.
-
-        Args:
-            data: Configuration dictionary
-
-        Returns:
-            PipelineConfig instance
-        """
         config = cls()
 
-        # Parse cleaning config
         cleaning_data = data.get("cleaning", {})
         config.cleaning = CleaningConfig(
             track_gap_hours=cleaning_data.get("track_gap_hours", 4.0),
             min_track_points=cleaning_data.get("min_track_points", 2),
             bounds=cleaning_data.get("bounds", config.cleaning.bounds),
             max_velocity_knots=cleaning_data.get("max_velocity_knots", 50.0),
-            velocity_by_ship_type=cleaning_data.get("velocity_by_ship_type", config.cleaning.velocity_by_ship_type),
-            collision_distance_threshold_km=cleaning_data.get("collision", {}).get("distance_threshold_km", 50.0),
-            collision_dbscan_eps_km=cleaning_data.get("collision", {}).get("dbscan_eps_km", 5.0),
-            collision_min_bounce_count=cleaning_data.get("collision", {}).get("min_bounce_count", 3),
-            collision_lookback_window=cleaning_data.get("collision", {}).get("lookback_window", 10),
+            velocity_by_ship_type=cleaning_data.get(
+                "velocity_by_ship_type", config.cleaning.velocity_by_ship_type
+            ),
+            collision_distance_threshold_km=cleaning_data.get("collision", {}).get(
+                "distance_threshold_km", 50.0
+            ),
+            collision_dbscan_eps_km=cleaning_data.get("collision", {}).get(
+                "dbscan_eps_km", 5.0
+            ),
+            collision_min_bounce_count=cleaning_data.get("collision", {}).get(
+                "min_bounce_count", 3
+            ),
+            collision_lookback_window=cleaning_data.get("collision", {}).get(
+                "lookback_window", 10
+            ),
         )
 
-        # Parse storage config
         storage_data = data.get("storage", {})
         config.storage = StorageConfig(
-            s3_bucket=storage_data.get("s3_bucket", ""),
-            raw_prefix=storage_data.get("raw_prefix", "raw/"),
-            cleaned_prefix=storage_data.get("cleaned_prefix", "cleaned/"),
-            state_prefix=storage_data.get("state_prefix", "state/"),
-            local_working_dir=storage_data.get("local_working_dir", "/home/ec2-user/ais-working"),
+            raw_dir=storage_data.get("raw_dir", config.storage.raw_dir),
+            clean_dir=storage_data.get("clean_dir", config.storage.clean_dir),
+            state_dir=storage_data.get("state_dir", config.storage.state_dir),
         )
 
-        # Parse output config
         output_data = data.get("output", {})
         config.output = OutputConfig(
             format=output_data.get("format", "parquet"),
@@ -139,7 +144,6 @@ class PipelineConfig:
             row_group_size=output_data.get("row_group_size", 100_000),
         )
 
-        # Parse processing config
         processing_data = data.get("processing", {})
         config.processing = ProcessingConfig(
             batch_size_days=processing_data.get("batch_size_days", 7),
@@ -151,12 +155,4 @@ class PipelineConfig:
 
 
 def load_config(path: str = "config/production.yaml") -> PipelineConfig:
-    """Load pipeline configuration from file.
-
-    Args:
-        path: Path to configuration file
-
-    Returns:
-        PipelineConfig instance
-    """
     return PipelineConfig.from_yaml(path)

@@ -1,8 +1,7 @@
-"""
-AIS Data Processing Scripts
+"""AIS Data Processing Scripts.
 
-Core S3-based AIS data processing pipeline with high-performance
+Local-filesystem AIS data processing utilities with high-performance
 vectorized operations and track continuity management.
 """
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"

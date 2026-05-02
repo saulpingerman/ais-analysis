@@ -1,4 +1,4 @@
-"""Cross-file track continuity state management.
+"""Cross-file track continuity state management (local FS).
 
 Handles maintaining track state across multiple files to ensure:
 - Track IDs are consistent for vessels spanning multiple days
@@ -7,24 +7,23 @@ Handles maintaining track state across multiple files to ensure:
 """
 import json
 import logging
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Any
 from pathlib import Path
-
-import boto3
-from botocore.exceptions import ClientError
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+STATE_FILENAME = "track_continuity.json"
 
 
 @dataclass
 class MMSIState:
     """State for a single MMSI."""
-    last_position: Tuple[float, float]  # (lat, lon)
-    last_timestamp: str  # ISO format timestamp
+    last_position: Tuple[float, float]
+    last_timestamp: str
     current_segment: int
-    cluster_assignment: Optional[str] = None  # "A" or "B" for collision MMSIs
+    cluster_assignment: Optional[str] = None
 
 
 @dataclass
@@ -44,7 +43,6 @@ class TrackContinuityState:
     collision_registry: Dict[int, CollisionRegistryEntry] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
             "last_updated": self.last_updated,
             "last_file_processed": self.last_file_processed,
@@ -69,13 +67,11 @@ class TrackContinuityState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TrackContinuityState":
-        """Create from dictionary."""
         state = cls(
             last_updated=data.get("last_updated", ""),
             last_file_processed=data.get("last_file_processed", ""),
         )
 
-        # Parse MMSI state
         for mmsi_str, mmsi_data in data.get("mmsi_state", {}).items():
             mmsi = int(mmsi_str)
             state.mmsi_state[mmsi] = MMSIState(
@@ -85,7 +81,6 @@ class TrackContinuityState:
                 cluster_assignment=mmsi_data.get("cluster_assignment"),
             )
 
-        # Parse collision registry
         for mmsi_str, collision_data in data.get("collision_registry", {}).items():
             mmsi = int(mmsi_str)
             state.collision_registry[mmsi] = CollisionRegistryEntry(
@@ -97,18 +92,6 @@ class TrackContinuityState:
         return state
 
     def get_starting_segment(self, mmsi: int, first_timestamp: datetime, gap_hours: float) -> int:
-        """Get the starting segment number for an MMSI.
-
-        Checks if there's continuity from previous file.
-
-        Args:
-            mmsi: Vessel MMSI
-            first_timestamp: First timestamp in current file
-            gap_hours: Gap threshold in hours
-
-        Returns:
-            Starting segment number
-        """
         if mmsi not in self.mmsi_state:
             return 0
 
@@ -117,45 +100,20 @@ class TrackContinuityState:
         time_gap_hours = (first_timestamp - last_ts).total_seconds() / 3600
 
         if time_gap_hours <= gap_hours:
-            # Continue existing track
             return mmsi_state.current_segment
-        else:
-            # Start new segment
-            return mmsi_state.current_segment + 1
+        return mmsi_state.current_segment + 1
 
     def get_cluster_assignment(self, mmsi: int) -> Optional[str]:
-        """Get cluster assignment for an MMSI if it's a known collision.
-
-        Args:
-            mmsi: Vessel MMSI
-
-        Returns:
-            "A" or "B" if known collision, None otherwise
-        """
         if mmsi in self.mmsi_state and self.mmsi_state[mmsi].cluster_assignment:
             return self.mmsi_state[mmsi].cluster_assignment
         return None
 
     def is_known_collision(self, mmsi: int) -> bool:
-        """Check if MMSI is a known collision.
-
-        Args:
-            mmsi: Vessel MMSI
-
-        Returns:
-            True if MMSI is in collision registry
-        """
         return mmsi in self.collision_registry
 
-    def get_collision_centroids(self, mmsi: int) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
-        """Get collision centroids for a known collision MMSI.
-
-        Args:
-            mmsi: Vessel MMSI
-
-        Returns:
-            Tuple of (centroid_a, centroid_b) or None
-        """
+    def get_collision_centroids(
+        self, mmsi: int
+    ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
         if mmsi in self.collision_registry:
             entry = self.collision_registry[mmsi]
             return (entry.cluster_a_centroid, entry.cluster_b_centroid)
@@ -168,16 +126,7 @@ class TrackContinuityState:
         last_timestamp: datetime,
         current_segment: int,
         cluster_assignment: Optional[str] = None,
-    ):
-        """Update state for an MMSI after processing.
-
-        Args:
-            mmsi: Vessel MMSI
-            last_position: Last (lat, lon)
-            last_timestamp: Last timestamp
-            current_segment: Current segment number
-            cluster_assignment: Cluster assignment if collision
-        """
+    ) -> None:
         self.mmsi_state[mmsi] = MMSIState(
             last_position=last_position,
             last_timestamp=last_timestamp.isoformat(),
@@ -191,15 +140,7 @@ class TrackContinuityState:
         centroid_a: Tuple[float, float],
         centroid_b: Tuple[float, float],
         detected_date: str,
-    ):
-        """Register a new MMSI collision.
-
-        Args:
-            mmsi: Vessel MMSI
-            centroid_a: Cluster A centroid (lat, lon)
-            centroid_b: Cluster B centroid (lat, lon)
-            detected_date: Date collision was detected
-        """
+    ) -> None:
         self.collision_registry[mmsi] = CollisionRegistryEntry(
             detected_date=detected_date,
             cluster_a_centroid=centroid_a,
@@ -207,77 +148,30 @@ class TrackContinuityState:
         )
 
 
-def load_state(
-    bucket_name: str,
-    state_prefix: str = "state/",
-    s3_client=None,
-) -> TrackContinuityState:
-    """Load track continuity state from S3.
+def load_state(state_dir: Path) -> TrackContinuityState:
+    """Load continuity state from <state_dir>/track_continuity.json, or return a fresh one."""
+    state_dir = Path(state_dir)
+    state_path = state_dir / STATE_FILENAME
 
-    Args:
-        bucket_name: S3 bucket name
-        state_prefix: Prefix for state files
-        s3_client: Optional boto3 S3 client
+    if not state_path.exists():
+        logger.info("No existing state found, starting fresh")
+        return TrackContinuityState()
 
-    Returns:
-        TrackContinuityState (empty if no state exists)
-    """
-    if s3_client is None:
-        s3_client = boto3.client("s3")
-
-    state_key = f"{state_prefix.rstrip('/')}/track_continuity.json"
-
-    try:
-        response = s3_client.get_object(Bucket=bucket_name, Key=state_key)
-        data = json.loads(response["Body"].read().decode("utf-8"))
-        logger.info(f"Loaded state from s3://{bucket_name}/{state_key}")
-        return TrackContinuityState.from_dict(data)
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NoSuchKey":
-            logger.info("No existing state found, starting fresh")
-            return TrackContinuityState()
-        else:
-            logger.error(f"Error loading state: {e}")
-            raise
-    except Exception as e:
-        logger.error(f"Error loading state: {e}")
-        raise
+    with open(state_path, "r") as f:
+        data = json.load(f)
+    logger.info(f"Loaded state from {state_path}")
+    return TrackContinuityState.from_dict(data)
 
 
-def save_state(
-    state: TrackContinuityState,
-    bucket_name: str,
-    state_prefix: str = "state/",
-    s3_client=None,
-) -> bool:
-    """Save track continuity state to S3.
+def save_state(state: TrackContinuityState, state_dir: Path) -> None:
+    """Persist state atomically (write to .tmp then rename)."""
+    state_dir = Path(state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_path = state_dir / STATE_FILENAME
+    tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
 
-    Args:
-        state: State to save
-        bucket_name: S3 bucket name
-        state_prefix: Prefix for state files
-        s3_client: Optional boto3 S3 client
-
-    Returns:
-        True if successful
-    """
-    if s3_client is None:
-        s3_client = boto3.client("s3")
-
-    state_key = f"{state_prefix.rstrip('/')}/track_continuity.json"
-
-    try:
-        state.last_updated = datetime.utcnow().isoformat()
-        state_json = json.dumps(state.to_dict(), indent=2)
-
-        s3_client.put_object(
-            Bucket=bucket_name,
-            Key=state_key,
-            Body=state_json.encode("utf-8"),
-            ContentType="application/json",
-        )
-        logger.info(f"Saved state to s3://{bucket_name}/{state_key}")
-        return True
-    except Exception as e:
-        logger.error(f"Error saving state: {e}")
-        return False
+    state.last_updated = datetime.utcnow().isoformat()
+    with open(tmp_path, "w") as f:
+        json.dump(state.to_dict(), f, indent=2)
+    tmp_path.replace(state_path)
+    logger.info(f"Saved state to {state_path}")

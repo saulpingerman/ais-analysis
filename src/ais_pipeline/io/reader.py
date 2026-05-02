@@ -1,18 +1,15 @@
-"""Reading ZIP/CSV files from S3."""
+"""Reading ZIP/CSV files from local filesystem."""
 import io
-import re
 import logging
+import re
 import zipfile
-from collections import Counter
+from pathlib import Path
 from typing import Dict, List, Optional
 
-import boto3
 import polars as pl
-from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-# Column mapping patterns for AIS data
 COLUMN_PATTERNS = {
     "timestamp": re.compile(r"^#?\s*timestamp$", re.I),
     "mmsi": re.compile(r"^mmsi$", re.I),
@@ -27,7 +24,6 @@ COLUMN_PATTERNS = {
     "callsign": re.compile(r"^callsign$", re.I),
 }
 
-# Timestamp formats to try
 TIMESTAMP_FORMATS = [
     "%d/%m/%Y %H:%M:%S",
     "%Y-%m-%d %H:%M:%S",
@@ -37,15 +33,8 @@ TIMESTAMP_FORMATS = [
 
 
 def map_columns(source_columns: List[str]) -> Dict[str, str]:
-    """Map source columns to canonical names.
-
-    Args:
-        source_columns: List of column names from source file
-
-    Returns:
-        Dictionary mapping source column names to canonical names
-    """
-    rename_map = {}
+    """Map source columns to canonical names."""
+    rename_map: Dict[str, str] = {}
     for canonical, pattern in COLUMN_PATTERNS.items():
         for source_col in source_columns:
             if pattern.match(source_col):
@@ -55,69 +44,25 @@ def map_columns(source_columns: List[str]) -> Dict[str, str]:
     return rename_map
 
 
-def list_raw_files(
-    bucket_name: str,
-    prefix: str = "raw/",
-    s3_client=None,
-) -> List[str]:
-    """List all ZIP files in S3 bucket.
-
-    Args:
-        bucket_name: S3 bucket name
-        prefix: S3 prefix for raw files
-        s3_client: Optional boto3 S3 client
-
-    Returns:
-        Sorted list of S3 keys for ZIP files
-    """
-    if s3_client is None:
-        s3_client = boto3.client("s3")
-
-    try:
-        paginator = s3_client.get_paginator("list_objects_v2")
-        zip_files = []
-
-        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-            if "Contents" in page:
-                for obj in page["Contents"]:
-                    key = obj["Key"]
-                    if key.lower().endswith(".zip") and "aisdk-" in key:
-                        zip_files.append(key)
-
-        return sorted(zip_files)
-    except ClientError as e:
-        logger.error(f"Error listing S3 objects: {e}")
+def list_raw_files(raw_dir: Path) -> List[Path]:
+    """List all aisdk-*.zip files under raw_dir, recursively, sorted by name."""
+    raw_dir = Path(raw_dir)
+    if not raw_dir.exists():
+        logger.error(f"Raw directory does not exist: {raw_dir}")
         return []
 
+    zip_files = sorted(p for p in raw_dir.rglob("aisdk-*.zip") if p.is_file())
+    return zip_files
 
-def read_zip_from_s3(
-    bucket_name: str,
-    s3_key: str,
-    s3_client=None,
-) -> Optional[pl.DataFrame]:
-    """Read and process a ZIP file from S3.
 
-    Args:
-        bucket_name: S3 bucket name
-        s3_key: S3 key for the ZIP file
-        s3_client: Optional boto3 S3 client
-
-    Returns:
-        Combined DataFrame from all CSVs in the ZIP, or None on error
-    """
-    if s3_client is None:
-        s3_client = boto3.client("s3")
-
+def read_zip(path: Path) -> Optional[pl.DataFrame]:
+    """Read all CSVs out of a local DMA zip and return a combined DataFrame."""
+    path = Path(path)
     try:
-        logger.info(f"Reading {s3_key}")
+        logger.info(f"Reading {path}")
 
-        # Download ZIP file to memory
-        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-        zip_data = response["Body"].read()
-
-        all_data = []
-
-        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+        all_data: List[pl.DataFrame] = []
+        with zipfile.ZipFile(path) as zf:
             csv_members = [m for m in zf.infolist() if m.filename.lower().endswith(".csv")]
 
             for member in csv_members:
@@ -130,36 +75,26 @@ def read_zip_from_s3(
                     continue
 
         if not all_data:
-            logger.warning(f"No valid data found in {s3_key}")
+            logger.warning(f"No valid data found in {path}")
             return None
 
-        # Combine all data
         combined_df = pl.concat(all_data, how="diagonal")
 
-        # Ensure we have lat/lon columns (not latitude/longitude)
         if "latitude" in combined_df.columns:
             combined_df = combined_df.rename({"latitude": "lat"})
         if "longitude" in combined_df.columns:
             combined_df = combined_df.rename({"longitude": "lon"})
 
-        logger.info(f"Read {combined_df.height} records from {s3_key}")
+        logger.info(f"Read {combined_df.height} records from {path}")
         return combined_df
 
     except Exception as e:
-        logger.error(f"Error reading {s3_key}: {e}")
+        logger.error(f"Error reading {path}: {e}")
         return None
 
 
 def read_csv_from_zip(zf: zipfile.ZipFile, filename: str) -> Optional[pl.DataFrame]:
-    """Read a single CSV file from a ZIP archive.
-
-    Args:
-        zf: ZipFile object
-        filename: Name of the CSV file within the ZIP
-
-    Returns:
-        DataFrame or None on error
-    """
+    """Read a single CSV file from a ZIP archive."""
     with zf.open(filename) as csv_stream:
         text_stream = io.TextIOWrapper(csv_stream, encoding="utf-8", errors="ignore")
 
@@ -172,19 +107,16 @@ def read_csv_from_zip(zf: zipfile.ZipFile, filename: str) -> Optional[pl.DataFra
                 infer_schema_length=1000,
             )
 
-            # Map columns to canonical names
             rename_map = map_columns(df.columns)
             if not rename_map:
                 return None
 
-            # Select and rename columns
             cols_to_keep = [col for col in rename_map.keys() if col in df.columns]
             if not cols_to_keep:
                 return None
 
             df = df.select(cols_to_keep).rename(rename_map)
 
-            # Parse timestamp
             if "timestamp" in df.columns:
                 df = parse_timestamp(df)
                 if df is None:
@@ -198,21 +130,14 @@ def read_csv_from_zip(zf: zipfile.ZipFile, filename: str) -> Optional[pl.DataFra
 
 
 def parse_timestamp(df: pl.DataFrame) -> Optional[pl.DataFrame]:
-    """Parse timestamp column trying multiple formats.
-
-    Args:
-        df: DataFrame with timestamp column
-
-    Returns:
-        DataFrame with parsed timestamp or None if parsing fails
-    """
+    """Parse timestamp column trying multiple formats."""
     for fmt in TIMESTAMP_FORMATS:
         try:
             parsed_df = df.with_columns([
                 pl.col("timestamp").str.strptime(
                     pl.Datetime,
                     format=fmt,
-                    strict=False
+                    strict=False,
                 )
             ]).filter(pl.col("timestamp").is_not_null())
 

@@ -1,4 +1,4 @@
-"""Main AIS data processing pipeline.
+"""Main AIS data processing pipeline (local filesystem).
 
 Orchestrates the complete cleaning workflow:
 1. Basic Validation
@@ -12,21 +12,26 @@ Handles cross-file track continuity and checkpointing.
 import logging
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-import boto3
 import polars as pl
 from tqdm import tqdm
 
-from .config import PipelineConfig
-from .cleaning.validator import validate_positions, get_validation_stats
-from .cleaning.outliers import remove_single_outliers
 from .cleaning.collision import detect_mmsi_collision, split_collision_tracks
-from .cleaning.segmentation import segment_tracks, filter_short_tracks, add_dt_seconds, get_final_segment_number
-from .state.continuity import TrackContinuityState, load_state, save_state
+from .cleaning.outliers import remove_single_outliers
+from .cleaning.segmentation import (
+    add_dt_seconds,
+    filter_short_tracks,
+    get_final_segment_number,
+    segment_tracks,
+)
+from .cleaning.validator import validate_positions
+from .config import PipelineConfig
+from .io.reader import list_raw_files, read_zip
+from .io.writer import generate_track_catalog, write_partitioned_parquet, write_track_catalog
 from .state.checkpoint import ProcessingCheckpoint, load_checkpoint, save_checkpoint
-from .io.reader import read_zip_from_s3, list_raw_files
-from .io.writer import write_partitioned_parquet, generate_track_catalog, write_track_catalog
+from .state.continuity import TrackContinuityState, load_state, save_state
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +40,10 @@ class AISPipeline:
     """Main AIS data processing pipeline."""
 
     def __init__(self, config: PipelineConfig):
-        """Initialize pipeline with configuration.
-
-        Args:
-            config: Pipeline configuration
-        """
         self.config = config
-        self.s3_client = boto3.client("s3")
         self.state: Optional[TrackContinuityState] = None
         self.checkpoint: Optional[ProcessingCheckpoint] = None
-        self.stats = {
+        self.stats: Dict[str, Any] = {
             "files_processed": 0,
             "total_records_input": 0,
             "total_records_output": 0,
@@ -56,22 +55,15 @@ class AISPipeline:
         }
 
     def initialize(self, resume: bool = False) -> bool:
-        """Initialize pipeline state and checkpoint.
-
-        Args:
-            resume: If True, load existing state; if False, start fresh
-
-        Returns:
-            True if initialization successful
-        """
         try:
-            bucket = self.config.storage.s3_bucket
-            state_prefix = self.config.storage.state_prefix
+            state_dir = self.config.storage.state_path
 
             if resume:
-                self.state = load_state(bucket, state_prefix, self.s3_client)
-                self.checkpoint = load_checkpoint(bucket, state_prefix, self.s3_client)
-                logger.info(f"Resumed from checkpoint: {len(self.checkpoint.processed_files)} files already processed")
+                self.state = load_state(state_dir)
+                self.checkpoint = load_checkpoint(state_dir)
+                logger.info(
+                    f"Resumed from checkpoint: {len(self.checkpoint.processed_files)} files already processed"
+                )
             else:
                 self.state = TrackContinuityState()
                 self.checkpoint = ProcessingCheckpoint()
@@ -85,26 +77,14 @@ class AISPipeline:
             return False
 
     def process_mmsi_group(self, df: pl.DataFrame) -> Optional[pl.DataFrame]:
-        """Process a single MMSI group through the cleaning pipeline.
-
-        Args:
-            df: DataFrame for a single MMSI, sorted by timestamp
-
-        Returns:
-            Cleaned DataFrame with track_id, or None if no valid data
-        """
+        """Process a single MMSI group through the cleaning pipeline."""
         if df.is_empty():
             return None
 
         mmsi = df.select("mmsi").item(0, 0)
 
-        # Step 1: Basic Validation (already done at file level, but double-check)
-        original_count = df.height
-
-        # Step 2: Check for MMSI Collision
         cluster_assignment = None
         if self.state.is_known_collision(mmsi):
-            # Already known collision - apply existing cluster assignments
             centroids = self.state.get_collision_centroids(mmsi)
             if centroids:
                 from .cleaning.collision import CollisionInfo
@@ -118,7 +98,6 @@ class AISPipeline:
                 df = split_collision_tracks(df, known_collision_info)
                 cluster_assignment = df.select("cluster_assignment").item(0, 0)
         else:
-            # Check for new collision
             collision_info = detect_mmsi_collision(
                 df,
                 distance_threshold_km=self.config.cleaning.collision_distance_threshold_km,
@@ -128,10 +107,11 @@ class AISPipeline:
             )
 
             if collision_info:
-                logger.info(f"Detected MMSI collision for {mmsi}: {collision_info.bounce_count} bounces")
+                logger.info(
+                    f"Detected MMSI collision for {mmsi}: {collision_info.bounce_count} bounces"
+                )
                 self.stats["collisions_detected"] += 1
 
-                # Register collision
                 self.state.register_collision(
                     mmsi=mmsi,
                     centroid_a=collision_info.cluster_a_centroid,
@@ -139,11 +119,9 @@ class AISPipeline:
                     detected_date=datetime.utcnow().strftime("%Y-%m-%d"),
                 )
 
-                # Split tracks
                 df = split_collision_tracks(df, collision_info)
                 cluster_assignment = df.select("cluster_assignment").item(0, 0)
 
-        # Step 3: Single Outlier Removal
         pre_outlier_count = df.height
         df = remove_single_outliers(
             df,
@@ -155,8 +133,6 @@ class AISPipeline:
         if df.is_empty():
             return None
 
-        # Step 4: Track Segmentation
-        # Get starting segment from state for continuity
         first_timestamp = df.select("timestamp").item(0, 0)
         starting_segment = self.state.get_starting_segment(
             mmsi,
@@ -172,16 +148,13 @@ class AISPipeline:
             cluster_assignment=cluster_assignment,
         )
 
-        # Step 5: Filter Short Tracks
         df = filter_short_tracks(df, self.config.cleaning.min_track_points)
 
         if df.is_empty():
             return None
 
-        # Add dt_seconds column
         df = add_dt_seconds(df)
 
-        # Update state
         last_row = df.tail(1)
         self.state.update_mmsi_state(
             mmsi=mmsi,
@@ -196,29 +169,16 @@ class AISPipeline:
 
         return df
 
-    def process_file(self, s3_key: str) -> Optional[pl.DataFrame]:
-        """Process a single ZIP file.
-
-        Args:
-            s3_key: S3 key for the ZIP file
-
-        Returns:
-            Processed DataFrame or None on error
-        """
-        # Read file
-        raw_df = read_zip_from_s3(
-            self.config.storage.s3_bucket,
-            s3_key,
-            self.s3_client,
-        )
+    def process_file(self, zip_path: Path) -> Optional[pl.DataFrame]:
+        """Process a single ZIP file from the local filesystem."""
+        raw_df = read_zip(zip_path)
 
         if raw_df is None or raw_df.is_empty():
-            logger.warning(f"No data read from {s3_key}")
+            logger.warning(f"No data read from {zip_path}")
             return None
 
         self.stats["total_records_input"] += raw_df.height
 
-        # Step 1: Basic Validation
         validated_df = validate_positions(
             raw_df,
             bounds=self.config.cleaning.bounds,
@@ -227,14 +187,12 @@ class AISPipeline:
         self.stats["records_removed_validation"] += raw_df.height - validated_df.height
 
         if validated_df.is_empty():
-            logger.warning(f"All records filtered out from {s3_key}")
+            logger.warning(f"All records filtered out from {zip_path}")
             return None
 
-        # Sort by MMSI and timestamp for processing
         validated_df = validated_df.sort(["mmsi", "timestamp"])
 
-        # Process by MMSI
-        all_processed = []
+        all_processed: List[pl.DataFrame] = []
         mmsi_groups = validated_df.partition_by("mmsi")
 
         for mmsi_df in mmsi_groups:
@@ -245,108 +203,81 @@ class AISPipeline:
             if processed_df is not None:
                 all_processed.append(processed_df)
 
-                # Track unique track IDs
                 for track_id in processed_df.select("track_id").unique().to_series().to_list():
                     self.stats["unique_tracks"].add(track_id)
 
         if not all_processed:
             return None
 
-        # Combine all processed data
         result_df = pl.concat(all_processed, how="diagonal")
         self.stats["total_records_output"] += result_df.height
 
         return result_df
 
     def run(self, resume: bool = False, max_files: Optional[int] = None) -> Dict[str, Any]:
-        """Run the complete processing pipeline.
-
-        Args:
-            resume: If True, resume from checkpoint
-            max_files: Optional maximum number of files to process
-
-        Returns:
-            Dictionary with processing statistics
-        """
+        """Run the complete processing pipeline."""
         start_time = time.time()
 
-        # Initialize
         if not self.initialize(resume):
             return {"error": "Failed to initialize"}
 
-        # Get list of files to process
-        all_files = list_raw_files(
-            self.config.storage.s3_bucket,
-            self.config.storage.raw_prefix,
-            self.s3_client,
-        )
+        raw_dir = self.config.storage.raw_path
+        clean_dir = self.config.storage.clean_path
+        state_dir = self.config.storage.state_path
 
+        all_files = list_raw_files(raw_dir)
         if not all_files:
-            return {"error": "No files found to process"}
+            return {"error": f"No files found in {raw_dir}"}
 
-        # Filter to pending files
-        pending_files = self.checkpoint.get_pending_files(all_files)
+        all_keys = [str(p) for p in all_files]
+        pending_keys = self.checkpoint.get_pending_files(all_keys)
 
         if max_files:
-            pending_files = pending_files[:max_files]
+            pending_keys = pending_keys[:max_files]
 
-        logger.info(f"Processing {len(pending_files)} files (of {len(all_files)} total)")
+        logger.info(f"Processing {len(pending_keys)} files (of {len(all_files)} total)")
 
-        # Process files - write incrementally to avoid OOM
-        all_catalogs = []
+        all_catalogs: List[pl.DataFrame] = []
 
-        for s3_key in tqdm(pending_files, desc="Processing files"):
+        for zip_key in tqdm(pending_keys, desc="Processing files"):
+            zip_path = Path(zip_key)
             try:
-                result_df = self.process_file(s3_key)
+                result_df = self.process_file(zip_path)
 
                 if result_df is not None and not result_df.is_empty():
-                    # Write this file's output immediately (incremental write)
                     write_partitioned_parquet(
                         result_df,
-                        self.config.storage.s3_bucket,
-                        self.config.storage.cleaned_prefix,
+                        clean_dir,
                         compression=self.config.output.compression,
                         compression_level=self.config.output.compression_level,
                         row_group_size=self.config.output.row_group_size,
-                        s3_client=self.s3_client,
                     )
 
-                    # Collect catalog info (small - just metadata)
-                    file_catalog = generate_track_catalog(result_df, self.config.storage.cleaned_prefix)
+                    file_catalog = generate_track_catalog(result_df)
                     if not file_catalog.is_empty():
                         all_catalogs.append(file_catalog)
 
-                # Update checkpoint
-                self.checkpoint.mark_processed(s3_key)
+                self.checkpoint.mark_processed(zip_key)
                 self.stats["files_processed"] += 1
 
-                # Save state and checkpoint periodically
                 if self.stats["files_processed"] % self.config.processing.checkpoint_interval == 0:
-                    save_state(self.state, self.config.storage.s3_bucket, self.config.storage.state_prefix, self.s3_client)
-                    save_checkpoint(self.checkpoint, self.config.storage.s3_bucket, self.config.storage.state_prefix, self.s3_client)
+                    save_state(self.state, state_dir)
+                    save_checkpoint(self.checkpoint, state_dir)
 
             except Exception as e:
-                logger.error(f"Error processing {s3_key}: {e}")
-                self.checkpoint.mark_failed(s3_key)
+                logger.error(f"Error processing {zip_key}: {e}")
+                self.checkpoint.mark_failed(zip_key)
 
-        # Write combined track catalog at the end (small - just metadata)
         if all_catalogs:
             combined_catalog = pl.concat(all_catalogs, how="diagonal")
-            write_track_catalog(
-                combined_catalog,
-                self.config.storage.s3_bucket,
-                self.config.storage.cleaned_prefix,
-                self.s3_client,
-            )
+            write_track_catalog(combined_catalog, clean_dir)
 
-        # Save final state
-        self.state.last_file_processed = pending_files[-1] if pending_files else ""
-        save_state(self.state, self.config.storage.s3_bucket, self.config.storage.state_prefix, self.s3_client)
-        save_checkpoint(self.checkpoint, self.config.storage.s3_bucket, self.config.storage.state_prefix, self.s3_client)
+        self.state.last_file_processed = pending_keys[-1] if pending_keys else ""
+        save_state(self.state, state_dir)
+        save_checkpoint(self.checkpoint, state_dir)
 
         elapsed_time = time.time() - start_time
 
-        # Prepare final stats
         final_stats = {
             "files_processed": self.stats["files_processed"],
             "total_records_input": self.stats["total_records_input"],
@@ -357,9 +288,10 @@ class AISPipeline:
             "unique_mmsis": len(self.stats["unique_mmsis"]),
             "unique_tracks": len(self.stats["unique_tracks"]),
             "elapsed_seconds": elapsed_time,
-            "records_per_second": self.stats["total_records_input"] / elapsed_time if elapsed_time > 0 else 0,
+            "records_per_second": (
+                self.stats["total_records_input"] / elapsed_time if elapsed_time > 0 else 0
+            ),
         }
 
         logger.info(f"Processing complete in {elapsed_time:.1f} seconds")
-
         return final_stats
